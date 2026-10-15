@@ -1,11 +1,25 @@
 const express = require('express');
 const router = express.Router();
-const Product = require('../models/product');
+const Product = require('../models/Product');
 
-// 1. GET: Saare products fetch karne ke liye
+// 1. GET: Saare products fetch karne ke liye (supports ?isNewArrival=true/false)
 router.get('/', async (req, res) => {
   try {
-    const products = await Product.find().sort({ createdAt: -1 });
+    const filter = {};
+    if (req.query.isNewArrival !== undefined) {
+      filter.isNewArrival = req.query.isNewArrival === 'true';
+    }
+    const products = await Product.find(filter).sort({ createdAt: -1 });
+    res.status(200).json(products);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 2. GET: Dedicated New Arrivals endpoint (HAMESHA /:id se UPAR)
+router.get('/new-arrivals', async (req, res) => {
+  try {
+    const products = await Product.find({ isNewArrival: true }).sort({ createdAt: -1 });
     res.status(200).json(products);
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

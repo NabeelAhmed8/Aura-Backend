@@ -1,8 +1,7 @@
 const express = require('express');
 const router = express.Router();
 
-// Agar Models ka folder capital hai toh '../Models/Contact' likhein, 
-// agar small hai toh '../models/Contact' likhein (Linux/Mac/Node mein case-sensitive hota hai)
+
 const Contact = require('../models/Contact'); // 👈 Path check karein
 
 // POST: Nayi inquiry create karna
