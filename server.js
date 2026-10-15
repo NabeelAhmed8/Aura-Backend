@@ -46,6 +46,10 @@ app.use('/api/subscribers', newsletterRoutes);
 const orderRoutes = require('./Routes/orderRoutes');
 app.use('/api/orders', orderRoutes);
 
+const reviewRoutes = require('./Routes/reviewRoutes');
+app.use('/api/reviews', reviewRoutes);
+
+
 // 4. Catch-All for undefined routes (JSON Response with explicit header)
 app.use((req, res) => {
   res.setHeader('Content-Type', 'application/json');

@@ -8,9 +8,9 @@ const User = require('../models/Users');
 const JWT_SECRET = process.env.JWT_SECRET || 'aura_super_secure_jwt_secret_key_2026';
 const SALT_ROUNDS = 10; // Bcrypt salt rounds (quantity: 10)
 
-// Helper: Password quantity / length check (kam az kam 10 characters)
+// Helper: Password length check (kam az kam 6 characters)
 const validatePasswordLength = (password) => {
-  return password && typeof password === 'string' && password.trim().length >= 10;
+  return password && typeof password === 'string' && password.trim().length >= 6;
 };
 
 // Helper: 1 Din (1 day) ke liye JWT Token generate karein
@@ -343,14 +343,58 @@ router.all(['/logout', '/signout'], (req, res) => {
     res.clearCookie('authToken', clearOpts);
     res.clearCookie('user', clearOpts);
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: "Logged out successfully! Cookies have been cleared.",
+      message: "Logged out successfully! Cookies have been cleared."
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// 3E. CHANGE PASSWORD ROUTE (Verify current password & hash new password)
+router.post('/change-password', async (req, res) => {
+  try {
+    const { email, currentPassword, newPassword } = req.body;
+
+    if (!email || !currentPassword || !newPassword) {
+      return res.status(400).json({ success: false, error: "Email, current password, and new password are required." });
+    }
+
+    if (!validatePasswordLength(newPassword)) {
+      return res.status(400).json({ success: false, error: "New password must be at least 6 characters long." });
+    }
+
+    const user = await User.findOne({ email: { $regex: new RegExp(`^${email.trim()}$`, 'i') } });
+    if (!user) {
+      return res.status(404).json({ success: false, error: "User account not found." });
+    }
+
+    let isMatch = false;
+    if (user.password && user.password.startsWith('$2')) {
+      isMatch = await bcrypt.compare(currentPassword, user.password);
+    } else {
+      isMatch = (user.password === currentPassword);
+    }
+
+    if (!isMatch) {
+      return res.status(400).json({ success: false, error: "Current password does not match our records." });
+    }
+
+    const salt = await bcrypt.genSalt(SALT_ROUNDS);
+    user.password = await bcrypt.hash(newPassword, salt);
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Password changed successfully in database!"
+    });
+  } catch (err) {
+    console.error('Change password error:', err);
+    res.status(500).json({ success: false, error: err.message || "Failed to change password." });
+  }
+});
+
 
 // ==========================================
 // 4. PUT ROUTES (Full / Model field updates)
@@ -371,7 +415,7 @@ router.put(['/', '/update-user'], async (req, res) => {
 
     if (password) {
       if (!validatePasswordLength(password)) {
-        return res.status(400).json({ success: false, error: "Password must be at least 10 characters long!" });
+        return res.status(400).json({ success: false, error: "Password must be at least 6 characters long!" });
       }
       const salt = await bcrypt.genSalt(SALT_ROUNDS);
       user.password = await bcrypt.hash(password, salt);

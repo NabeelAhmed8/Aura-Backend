@@ -24,8 +24,7 @@ const orderSchema = new mongoose.Schema({
   totalAmount: { type: Number, required: true },
   paymentMethod: {
     type: String,
-    enum: ['JazzCash', 'EasyPaisa', 'BankTransfer', 'Stripe', 'COD'],
-    required: true,
+    default: 'Direct Order',
   },
   senderNumber: { type: String },
   paymentStatus: {

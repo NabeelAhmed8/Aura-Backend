@@ -151,11 +151,11 @@ router.post(['/', '/create', '/place-order'], async (req, res) => {
       customer,
       items,
       totalAmount,
-      paymentMethod: paymentMethod || 'COD',
+      paymentMethod: paymentMethod || 'Direct Order',
       paymentStatus: isStripe ? 'Paid' : 'Pending',
       orderStatus: 'Processing',
       stripePaymentIntentId: isStripe ? stripePaymentIntentId : null,
-      transactionId: isStripe ? stripePaymentIntentId : `COD-${Date.now()}`,
+      transactionId: isStripe ? stripePaymentIntentId : `AURA-${Date.now()}`,
     });
 
     await order.save();
