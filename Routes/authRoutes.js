@@ -2,11 +2,15 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const User = require('../models/Users');
+const { sendVerificationEmail } = require('../utils/emailService');
 
 // Configuration
 const JWT_SECRET = process.env.JWT_SECRET || 'aura_super_secure_jwt_secret_key_2026';
 const SALT_ROUNDS = 10; // Bcrypt salt rounds (quantity: 10)
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5001';
 
 // Helper: Password length check (kam az kam 6 characters)
 const validatePasswordLength = (password) => {
@@ -68,6 +72,7 @@ const formatUser = (user) => {
     gender: user.gender || '',
     addresses: user.addresses || [],
     paymentMethods: user.paymentMethods || [],
+    isVerified: !!user.isVerified,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };
@@ -160,10 +165,49 @@ router.get('/verify-token', async (req, res) => {
   }
 });
 
+// 2D. Verify Email by Token (Email Verification Link Click Handler)
+router.get('/verify-email', async (req, res) => {
+  try {
+    const { token } = req.query;
+
+    if (!token) {
+      return res.redirect(`${FRONTEND_URL}/#/verify-email?status=failed&message=Verification+token+missing`);
+    }
+
+    const user = await User.findOne({
+      verificationToken: token,
+      verificationTokenExpires: { $gt: Date.now() }
+    });
+
+    if (!user) {
+      return res.redirect(`${FRONTEND_URL}/#/verify-email?status=failed&message=Verification+link+is+invalid+or+has+expired`);
+    }
+
+    // Mark as verified & clear verification token
+    user.isVerified = true;
+    user.verificationToken = undefined;
+    user.verificationTokenExpires = undefined;
+    await user.save();
+
+    // 1 Day Expiry JWT Token Generate Karein
+    const jwtToken = generateToken(user);
+
+    // Cookie mein token store karein (1 day expiry)
+    res.cookie('token', jwtToken, getCookieOptions());
+
+    // Redirect to frontend with success status & token
+    const redirectUrl = `${FRONTEND_URL}/#/verify-email?status=success&token=${encodeURIComponent(jwtToken)}&email=${encodeURIComponent(user.email)}`;
+    return res.redirect(redirectUrl);
+  } catch (err) {
+    console.error('Verify email route error:', err);
+    return res.redirect(`${FRONTEND_URL}/#/verify-email?status=failed&message=${encodeURIComponent(err.message)}`);
+  }
+});
+
 // ==========================================
 // 3. POST ROUTES
 // ==========================================
-// 3A. SIGNUP ROUTE (Naya account register karein - Bcrypt Hash + 1 Day Token)
+// 3A. SIGNUP ROUTE (Naya account register karein - Bcrypt Hash + Nodemailer Verification Email)
 router.post('/signup', async (req, res) => {
   try {
     const { email, password, firstName, lastName, name, phone, dateOfBirth, gender } = req.body;
@@ -201,28 +245,33 @@ router.post('/signup', async (req, res) => {
       }
     }
 
+    // 24 Hours ke liye Verification Token generate karein
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const verificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
     const newUser = new User({
       email: normalizedEmail,
-      password: hashedPassword, // Hashed password database mein save hoga
+      password: hashedPassword,
       firstName: fName,
       lastName: lName,
       phone: (phone || '').trim(),
       dateOfBirth: parsedDob,
-      gender: gender || ''
+      gender: gender || '',
+      isVerified: false,
+      verificationToken,
+      verificationTokenExpires,
     });
     await newUser.save();
 
-    // 1 Din ke liye JWT Token
-    const token = generateToken(newUser);
-    
-    // Cookie mein token store karein (1 day expiry)
-    res.cookie('token', token, getCookieOptions());
+    // Nodemailer ke zariye verification email bhein
+    const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
+    await sendVerificationEmail(newUser.email, `${fName} ${lName}`.trim(), verificationLink);
 
     res.status(201).json({ 
       success: true,
-      message: "User registered successfully!", 
-      token,
-      expiresIn: "1d",
+      requiresVerification: true,
+      message: "Account created successfully. A verification link has been sent to your email. Please check your inbox to activate your account.", 
+      email: newUser.email,
       user: formatUser(newUser)
     });
   } catch (err) {
@@ -230,7 +279,7 @@ router.post('/signup', async (req, res) => {
   }
 });
 
-// 3B. LOGIN ROUTE (Bcrypt Compare + 1 Din Expire Token + Cookie Set)
+// 3B. LOGIN ROUTE (Bcrypt Compare + Email Verification Check + Cookie Set)
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -265,18 +314,56 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ success: false, error: "Invalid email or password!" });
     }
 
-    // 1 Day Expiry JWT Token Generate Karein
-    const token = generateToken(user);
+    // Login verification link hamesha email par bhein (24 hours expiry)
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    user.verificationToken = verificationToken;
+    user.verificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await user.save();
 
-    // Cookie mein token store karein (1 day expiry)
-    res.cookie('token', token, getCookieOptions());
+    const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
+    await sendVerificationEmail(user.email, `${user.firstName || ''} ${user.lastName || ''}`.trim(), verificationLink, 'login');
 
-    res.status(200).json({ 
+    return res.status(200).json({ 
       success: true,
-      message: "Login successful!", 
-      token,
-      expiresIn: "1d",
-      user: formatUser(user)
+      requiresVerification: true,
+      message: "A sign-in link has been sent to your email. Please check your inbox and click the link to continue.", 
+      email: user.email
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 3C. RESEND VERIFICATION LINK ROUTE
+router.post('/resend-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ success: false, error: "Email is required!" });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const user = await User.findOne({ email: normalizedEmail });
+
+    if (!user) {
+      return res.status(404).json({ success: false, error: "No account found with this email address." });
+    }
+
+    if (user.isVerified) {
+      return res.status(400).json({ success: false, error: "This account is already verified. You may sign in directly." });
+    }
+
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    user.verificationToken = verificationToken;
+    user.verificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await user.save();
+
+    const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
+    await sendVerificationEmail(user.email, `${user.firstName || ''} ${user.lastName || ''}`.trim(), verificationLink);
+
+    res.status(200).json({
+      success: true,
+      message: "A new verification link has been sent to your email. Please check your inbox."
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

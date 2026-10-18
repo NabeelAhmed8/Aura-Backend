@@ -48,6 +48,11 @@ const userSchema = new mongoose.Schema({
   dateOfBirth: { type: Date },
   gender: { type: String, enum: ['Male', 'Female', 'Other', ''], default: '' },
   
+  // Email verification fields
+  isVerified: { type: Boolean, default: false },
+  verificationToken: { type: String, default: null },
+  verificationTokenExpires: { type: Date, default: null },
+  
   addresses: [addressSchema],
   
   shoppingPreferences: {
