@@ -32,16 +32,16 @@ const generateToken = (user) => {
 // Helper: Cookie options (1 din ke liye valid, secure & httpOnly)
 const getCookieOptions = () => ({
   httpOnly: true, // XSS attack protection (Frontend JavaScript isay read nahi kar sakti)
-  secure: (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true'),
-  sameSite: (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true') ? 'none' : 'lax',
+  secure: (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true' || Boolean(process.env.RAILWAY_ENVIRONMENT) || Boolean(process.env.RAILWAY_STATIC_URL)),
+  sameSite: (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true' || Boolean(process.env.RAILWAY_ENVIRONMENT) || Boolean(process.env.RAILWAY_STATIC_URL)) ? 'none' : 'lax',
   maxAge: 24 * 60 * 60 * 1000 // 1 din (24 hours in milliseconds)
 });
 
 // Helper: Cookie clear options
 const getClearCookieOptions = () => ({
   httpOnly: true,
-  secure: (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true'),
-  sameSite: (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true') ? 'none' : 'lax'
+  secure: (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true' || Boolean(process.env.RAILWAY_ENVIRONMENT) || Boolean(process.env.RAILWAY_STATIC_URL)),
+  sameSite: (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true' || Boolean(process.env.RAILWAY_ENVIRONMENT) || Boolean(process.env.RAILWAY_STATIC_URL)) ? 'none' : 'lax'
 });
 
 // Helper to format sanitized user object (passwords chupa kar safe data return karne ke liye)

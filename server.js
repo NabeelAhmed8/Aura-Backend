@@ -5,15 +5,17 @@ const cookieParser = require('cookie-parser');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
-// 1. Express app initialize & Reverse Proxy Configuration (Render / Cloudflare support)
+// 1. Express app initialize & Reverse Proxy Configuration (Railway / Render / Cloudflare support)
 const app = express();
 app.set('trust proxy', 1);
 
 // 2. CORS (Cross-Origin Resource Sharing) Configuration
-// Production (Render.com), GitHub Pages (*.github.io), Vercel, Netlify, and Localhost Support
+// Supports Railway (*.railway.app, *.up.railway.app), GitHub Pages (*.github.io), Vercel, Netlify, Render, and Localhost
 const rawAllowedOrigins = [
   process.env.FRONTEND_URL,
   process.env.CLIENT_URL,
+  process.env.RAILWAY_STATIC_URL ? `https://${process.env.RAILWAY_STATIC_URL}` : null,
+  process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : null,
   'http://localhost:5173',
   'http://localhost:3000',
   'http://localhost:5174',
@@ -54,9 +56,9 @@ const corsOptions = {
       return callback(null, true);
     }
 
-    // D. Allow cloud deployment & static host domains (GitHub Pages, Vercel, Netlify, Render)
+    // D. Allow cloud deployment & static host domains (Railway, GitHub Pages, Vercel, Netlify, Render)
     if (
-      /^https:\/\/([a-zA-Z0-9-]+\.)*(vercel\.app|onrender\.com|netlify\.app|github\.io)$/.test(cleanOrigin)
+      /^https:\/\/([a-zA-Z0-9-]+\.)*(vercel\.app|onrender\.com|netlify\.app|github\.io|railway\.app|up\.railway\.app)$/.test(cleanOrigin)
     ) {
       return callback(null, true);
     }
@@ -94,12 +96,12 @@ app.use(cookieParser());
 // Static Folder (Agar backend se images serve karni hon)
 app.use('/uploads', express.static('uploads'));
 
-// Root health check route (Render health check / monitoring)
+// Root health check route (Railway health check / monitoring)
 app.get('/', (req, res) => {
   res.status(200).json({
     status: 'success',
-    message: 'AURA API Server is running successfully on Render.',
-    environment: process.env.NODE_ENV || 'development',
+    message: 'AURA API Server is running successfully.',
+    environment: process.env.NODE_ENV || (process.env.RAILWAY_ENVIRONMENT ? 'production' : 'development'),
     timestamp: new Date().toISOString()
   });
 });
@@ -145,11 +147,16 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 6. MongoDB Connection
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log('MongoDB Connected Successfully!'))
-  .catch((err) => console.log('DB Connection Error:', err));
+// 6. MongoDB Connection (Supports MONGO_URI, MONGO_URL from Railway MongoDB plugin, or Atlas)
+const mongoUri = process.env.MONGO_URI || process.env.MONGO_URL || process.env.MONGODB_URL;
+if (!mongoUri) {
+  console.error('WARNING: Neither MONGO_URI nor MONGO_URL found in environment variables!');
+} else {
+  mongoose.connect(mongoUri)
+    .then(() => console.log('MongoDB Connected Successfully!'))
+    .catch((err) => console.log('DB Connection Error:', err));
+}
 
-// 7. Server Start
+// 7. Server Start (Listen on 0.0.0.0 for Railway / Container environments)
 const PORT = process.env.PORT || 5001;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
