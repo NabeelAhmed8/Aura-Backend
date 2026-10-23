@@ -4,7 +4,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const User = require('../models/Users');
-const { sendVerificationEmail } = require('../utils/emailService');
+const { sendVerificationEmail, sendOtpEmail } = require('../utils/emailService');
 
 // Configuration
 const JWT_SECRET = process.env.JWT_SECRET || 'aura_super_secure_jwt_secret_key_2026';
@@ -49,8 +49,8 @@ const formatUser = (user) => {
   let dobStr = '';
   if (user.dateOfBirth) {
     try {
-      dobStr = user.dateOfBirth instanceof Date 
-        ? user.dateOfBirth.toISOString().split('T')[0] 
+      dobStr = user.dateOfBirth instanceof Date
+        ? user.dateOfBirth.toISOString().split('T')[0]
         : String(user.dateOfBirth).split('T')[0];
     } catch {
       dobStr = String(user.dateOfBirth);
@@ -165,7 +165,31 @@ router.get('/verify-token', async (req, res) => {
   }
 });
 
-// 2D. Verify Email by Token (Email Verification Link Click Handler)
+// 2D. Check Email Registration Status (/check-email?email=...)
+router.get('/check-email', async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email || !email.trim()) {
+      return res.status(400).json({ success: false, message: 'Email is required.' });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await User.findOne({ email: { $regex: new RegExp(`^${normalizedEmail}$`, 'i') } });
+
+    return res.status(200).json({
+      success: true,
+      isRegistered: !!user,
+      exists: !!user,
+      email: normalizedEmail,
+      firstName: user?.firstName || '',
+    });
+  } catch (err) {
+    console.error('Check email error:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 2E. Verify Email by Token (Email Verification Link Click Handler)
 router.get('/verify-email', async (req, res) => {
   try {
     const { token } = req.query;
@@ -211,16 +235,16 @@ router.get('/verify-email', async (req, res) => {
 router.post('/signup', async (req, res) => {
   try {
     const { email, password, firstName, lastName, name, phone, dateOfBirth, gender } = req.body;
-    
+
     if (!email || !password) {
       return res.status(400).json({ success: false, error: "Email and password are required!" });
     }
 
     // Password quantity / length check (kam az kam 10 characters)
     if (!validatePasswordLength(password)) {
-      return res.status(400).json({ 
-        success: false, 
-        error: "Password must be at least 10 characters long! (Password kam az kam 10 characters ka hona chahiye)" 
+      return res.status(400).json({
+        success: false,
+        error: "Password must be at least 10 characters long! (Password kam az kam 10 characters ka hona chahiye)"
       });
     }
 
@@ -245,9 +269,9 @@ router.post('/signup', async (req, res) => {
       }
     }
 
-    // 24 Hours ke liye Verification Token generate karein
-    const verificationToken = crypto.randomBytes(32).toString('hex');
-    const verificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    // 15 Minutes ke liye 6-digit OTP Code generate karein
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpExpires = new Date(Date.now() + 15 * 60 * 1000);
 
     const newUser = new User({
       email: normalizedEmail,
@@ -258,19 +282,21 @@ router.post('/signup', async (req, res) => {
       dateOfBirth: parsedDob,
       gender: gender || '',
       isVerified: false,
-      verificationToken,
-      verificationTokenExpires,
+      verificationOtp: otpCode,
+      verificationOtpExpires: otpExpires,
+      verificationToken: otpCode,
+      verificationTokenExpires: otpExpires,
     });
     await newUser.save();
 
-    // Nodemailer ke zariye verification email bhein
-    const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
-    await sendVerificationEmail(newUser.email, `${fName} ${lName}`.trim(), verificationLink);
+    // Nodemailer ke zariye 6-digit OTP code bhejein
+    await sendOtpEmail(newUser.email, `${fName} ${lName}`.trim(), otpCode, 'signup');
 
-    res.status(201).json({ 
+    res.status(201).json({
       success: true,
       requiresVerification: true,
-      message: "Account created successfully. A verification link has been sent to your email. Please check your inbox to activate your account.", 
+      verificationType: 'otp',
+      message: "Account created successfully! A 6-digit verification code has been sent to your email.",
       email: newUser.email,
       user: formatUser(newUser)
     });
@@ -314,19 +340,21 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ success: false, error: "Invalid email or password!" });
     }
 
-    // Login verification link hamesha email par bhein (24 hours expiry)
-    const verificationToken = crypto.randomBytes(32).toString('hex');
-    user.verificationToken = verificationToken;
-    user.verificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    // Login ke liye 6-digit OTP Code bhein (15 mins expiry)
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    user.verificationOtp = otpCode;
+    user.verificationOtpExpires = new Date(Date.now() + 15 * 60 * 1000);
+    user.verificationToken = otpCode;
+    user.verificationTokenExpires = user.verificationOtpExpires;
     await user.save();
 
-    const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
-    await sendVerificationEmail(user.email, `${user.firstName || ''} ${user.lastName || ''}`.trim(), verificationLink, 'login');
+    await sendOtpEmail(user.email, `${user.firstName || ''} ${user.lastName || ''}`.trim(), otpCode, 'login');
 
-    return res.status(200).json({ 
+    return res.status(200).json({
       success: true,
       requiresVerification: true,
-      message: "A sign-in link has been sent to your email. Please check your inbox and click the link to continue.", 
+      verificationType: 'otp',
+      message: "A 6-digit sign-in code has been sent to your email. Please enter it below to continue.",
       email: user.email
     });
   } catch (err) {
@@ -334,8 +362,58 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// 3C. RESEND VERIFICATION LINK ROUTE
-router.post('/resend-verification', async (req, res) => {
+// 3C. VERIFY OTP CODE ROUTE (6-Digit OTP verification & session login)
+router.post('/verify-otp', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp) {
+      return res.status(400).json({ success: false, error: "Email and 6-digit verification code are required." });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const cleanOtp = String(otp).trim();
+
+    const user = await User.findOne({ email: normalizedEmail });
+    if (!user) {
+      return res.status(404).json({ success: false, error: "No account found with this email address." });
+    }
+
+    const storedOtp = user.verificationOtp || user.verificationToken;
+    if (!storedOtp || storedOtp !== cleanOtp) {
+      return res.status(400).json({ success: false, error: "Invalid verification code. Please check your email and try again." });
+    }
+
+    const expiryTime = user.verificationOtpExpires || user.verificationTokenExpires;
+    if (expiryTime && new Date(expiryTime).getTime() < Date.now()) {
+      return res.status(400).json({ success: false, error: "This verification code has expired. Please request a new one." });
+    }
+
+    // Mark as verified & clear OTP
+    user.isVerified = true;
+    user.verificationOtp = null;
+    user.verificationOtpExpires = null;
+    user.verificationToken = null;
+    user.verificationTokenExpires = null;
+    await user.save();
+
+    // 1 Day Expiry JWT Token Generate Karein
+    const jwtToken = generateToken(user);
+    res.cookie('token', jwtToken, getCookieOptions());
+
+    return res.status(200).json({
+      success: true,
+      message: "Account verified successfully! Welcome to AURA.",
+      token: jwtToken,
+      user: formatUser(user)
+    });
+  } catch (err) {
+    console.error("Verify OTP error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 3D. RESEND OTP / VERIFICATION CODE ROUTE
+router.post(['/resend-otp', '/resend-verification'], async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) {
@@ -349,21 +427,25 @@ router.post('/resend-verification', async (req, res) => {
       return res.status(404).json({ success: false, error: "No account found with this email address." });
     }
 
-    if (user.isVerified) {
-      return res.status(400).json({ success: false, error: "This account is already verified. You may sign in directly." });
-    }
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 mins expiry
 
-    const verificationToken = crypto.randomBytes(32).toString('hex');
-    user.verificationToken = verificationToken;
-    user.verificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    user.verificationOtp = otpCode;
+    user.verificationOtpExpires = otpExpires;
+    user.verificationToken = otpCode;
+    user.verificationTokenExpires = otpExpires;
     await user.save();
 
-    const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
-    await sendVerificationEmail(user.email, `${user.firstName || ''} ${user.lastName || ''}`.trim(), verificationLink);
+    await sendOtpEmail(
+      user.email,
+      `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+      otpCode,
+      user.isVerified ? 'login' : 'signup'
+    );
 
     res.status(200).json({
       success: true,
-      message: "A new verification link has been sent to your email. Please check your inbox."
+      message: "A new 6-digit verification code has been sent to your email. Please check your inbox."
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -380,9 +462,9 @@ router.post(['/', '/create-user'], async (req, res) => {
 
     // Password quantity / length check (kam az kam 10 characters)
     if (!validatePasswordLength(password)) {
-      return res.status(400).json({ 
-        success: false, 
-        error: "Password must be at least 10 characters long! (Password kam az kam 10 characters ka hona chahiye)" 
+      return res.status(400).json({
+        success: false,
+        error: "Password must be at least 10 characters long! (Password kam az kam 10 characters ka hona chahiye)"
       });
     }
 

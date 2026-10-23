@@ -60,8 +60,8 @@ const autoSaveUserAddress = async (userId, customer) => {
 };
 
 // Stripe Init (Secret key check ke sath)
-const stripe = process.env.STRIPE_SECRET_KEY 
-  ? new Stripe(process.env.STRIPE_SECRET_KEY) 
+const stripe = process.env.STRIPE_SECRET_KEY
+  ? new Stripe(process.env.STRIPE_SECRET_KEY)
   : null;
 
 // In-Memory store for temporary test OTPs
@@ -140,15 +140,63 @@ router.post(['/', '/create', '/place-order'], async (req, res) => {
   try {
     const { customer, items, totalAmount, paymentMethod, stripePaymentIntentId, userId } = req.body;
 
+    // 1. Strict Authentication Check: User must be logged in to place an order
+    const effectiveUserId = userId || req.body.user?._id || req.body.user?.id;
+    let authenticatedUser = null;
+    if (effectiveUserId) {
+      try {
+        authenticatedUser = await User.findById(effectiveUserId);
+      } catch (findErr) {
+        // Invalid ObjectId format ignored
+      }
+    }
+    if (!authenticatedUser && customer?.email) {
+      authenticatedUser = await User.findOne({ email: customer.email.trim().toLowerCase() });
+    }
+
+    if (!authenticatedUser) {
+      return res.status(401).json({
+        success: false,
+        message: 'Order restricted: You must be logged in to your account to place an order.'
+      });
+    }
+
     if (!customer || !items || !totalAmount) {
       return res.status(400).json({ success: false, message: 'Missing required order details (customer, items, totalAmount).' });
     }
 
     const isStripe = paymentMethod === 'Stripe';
 
+    // Verify Stripe payment intent on server-side if Stripe method is chosen
+    if (isStripe) {
+      if (!stripePaymentIntentId) {
+        return res.status(400).json({ success: false, message: 'Missing Stripe transaction reference.' });
+      }
+      if (stripe) {
+        try {
+          const intent = await stripe.paymentIntents.retrieve(stripePaymentIntentId);
+          if (intent.status !== 'succeeded') {
+            return res.status(400).json({
+              success: false,
+              message: `Stripe payment status is '${intent.status}'. Order cannot be marked as paid.`
+            });
+          }
+        } catch (sErr) {
+          console.error('Stripe Intent Verification Error:', sErr);
+          return res.status(400).json({
+            success: false,
+            message: `Stripe verification failed: ${sErr.message}`
+          });
+        }
+      }
+    }
+
     const order = new Order({
-      userId: userId || null,
-      customer,
+      userId: authenticatedUser._id.toString(),
+      customer: {
+        ...customer,
+        email: authenticatedUser.email || customer.email,
+      },
       items,
       totalAmount,
       paymentMethod: paymentMethod || 'Direct Order',
@@ -159,7 +207,7 @@ router.post(['/', '/create', '/place-order'], async (req, res) => {
     });
 
     await order.save();
-    await autoSaveUserAddress(userId, customer);
+    await autoSaveUserAddress(authenticatedUser._id.toString(), customer);
 
     res.status(201).json({
       success: true,
@@ -176,22 +224,51 @@ router.post(['/', '/create', '/place-order'], async (req, res) => {
 // 3B. Stripe Payment Intent (POST /pay-stripe ya /create-payment-intent)
 router.post(['/pay-stripe', '/create-payment-intent'], async (req, res) => {
   try {
-    const { amount } = req.body;
+    const { amount, customer, userId } = req.body;
 
-    if (!stripe) {
-      return res.status(500).json({ 
-        message: 'Stripe Secret Key missing in backend .env file.' 
+    // Authentication Check: User must be logged in to initialize Stripe payment
+    const effectiveUserId = userId || req.body.user?._id || req.body.user?.id;
+    let authenticatedUser = null;
+    if (effectiveUserId) {
+      try {
+        authenticatedUser = await User.findById(effectiveUserId);
+      } catch (findErr) { }
+    }
+    if (!authenticatedUser && customer?.email) {
+      authenticatedUser = await User.findOne({ email: customer.email.trim().toLowerCase() });
+    }
+
+    if (!authenticatedUser) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required. Please log in to initiate payment.'
       });
     }
 
-    if (!amount || amount <= 0) {
-      return res.status(400).json({ message: 'Valid amount is required.' });
+    if (!stripe) {
+      return res.status(500).json({
+        success: false,
+        message: 'Stripe Secret Key missing in backend .env file.'
+      });
+    }
+
+    const numAmount = Number(amount);
+    if (!numAmount || numAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'Valid amount is required.' });
     }
 
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(amount * 100),
+      amount: Math.round(numAmount * 100),
       currency: 'usd',
       automatic_payment_methods: { enabled: true },
+      receipt_email: (authenticatedUser.email || customer?.email || '').trim() || undefined,
+      description: `AURA Order - ${authenticatedUser.firstName || customer?.name || 'Customer'}`,
+      metadata: {
+        userId: authenticatedUser._id.toString(),
+        customerName: `${authenticatedUser.firstName || ''} ${authenticatedUser.lastName || ''}`.trim() || customer?.name || '',
+        customerEmail: authenticatedUser.email || customer?.email || '',
+        customerPhone: customer?.phone || authenticatedUser.phone || '',
+      }
     });
 
     res.status(200).json({
@@ -201,7 +278,7 @@ router.post(['/pay-stripe', '/create-payment-intent'], async (req, res) => {
     });
   } catch (error) {
     console.error('Stripe Intent Error:', error);
-    res.status(500).json({ message: error.message || 'Payment intent creation failed.' });
+    res.status(500).json({ success: false, message: error.message || 'Payment intent creation failed.' });
   }
 });
 
@@ -210,13 +287,35 @@ router.post(['/pay-local', '/initiate-local-payment'], async (req, res) => {
   try {
     const { customer, items, totalAmount, paymentMethod, accountIdentifier, userId } = req.body;
 
+    // Strict Authentication Check
+    const effectiveUserId = userId || req.body.user?._id || req.body.user?.id;
+    let authenticatedUser = null;
+    if (effectiveUserId) {
+      try {
+        authenticatedUser = await User.findById(effectiveUserId);
+      } catch (findErr) { }
+    }
+    if (!authenticatedUser && customer?.email) {
+      authenticatedUser = await User.findOne({ email: customer.email.trim().toLowerCase() });
+    }
+
+    if (!authenticatedUser) {
+      return res.status(401).json({
+        success: false,
+        message: 'Order restricted: You must be logged in to your account to place an order.'
+      });
+    }
+
     if (!customer || !items || !totalAmount || !accountIdentifier) {
       return res.status(400).json({ message: 'Missing required checkout information.' });
     }
 
     const order = new Order({
-      userId: userId || null,
-      customer,
+      userId: authenticatedUser._id.toString(),
+      customer: {
+        ...customer,
+        email: authenticatedUser.email || customer.email,
+      },
       items,
       totalAmount,
       paymentMethod,
@@ -226,7 +325,7 @@ router.post(['/pay-local', '/initiate-local-payment'], async (req, res) => {
     });
 
     await order.save();
-    await autoSaveUserAddress(userId, customer);
+    await autoSaveUserAddress(authenticatedUser._id.toString(), customer);
 
     const generatedOtp = '1234';
     otpMemoryStore[order._id.toString()] = generatedOtp;

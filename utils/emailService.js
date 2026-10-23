@@ -19,24 +19,26 @@ const createTransporter = () => {
 };
 
 /**
- * Send an email verification link to the user
+ * Send an OTP verification code to the user via email
  * @param {string} toEmail 
  * @param {string} userName 
- * @param {string} verificationLink 
+ * @param {string} otpCode 
  * @param {'signup'|'login'} type
  */
-const sendVerificationEmail = async (toEmail, userName, verificationLink, type = 'signup') => {
+const sendOtpEmail = async (toEmail, userName, otpCode, type = 'signup') => {
   const transporter = createTransporter();
 
   const recipientName = (userName && userName.trim()) || 'Valued Member';
   const isLogin = type === 'login';
 
-  const emailSubject = isLogin ? 'Verify Your AURA Sign In' : 'Verify Your AURA Account';
-  const heading = isLogin ? 'Sign In Verification' : 'Verify Your Email Address';
+  const emailSubject = isLogin 
+    ? `Your AURA Sign-In Code: ${otpCode}` 
+    : `Your AURA Verification Code: ${otpCode}`;
+
+  const heading = isLogin ? 'Sign-In Verification Code' : 'Verify Your Email Address';
   const bodyText = isLogin 
-    ? 'A sign in attempt was made for your account. Please click the button below to verify and log in to your account.'
-    : 'Welcome to AURA. Please verify your email address to activate your account and complete your sign in.';
-  const buttonText = isLogin ? 'Verify & Sign In' : 'Verify Account & Login';
+    ? 'A sign-in request was initiated for your AURA account. Please use the 6-digit code below to complete your login:'
+    : 'Welcome to AURA. Please enter the 6-digit verification code below to activate your account:';
 
   const htmlContent = `
     <!DOCTYPE html>
@@ -54,7 +56,7 @@ const sendVerificationEmail = async (toEmail, userName, verificationLink, type =
           color: #171717;
         }
         .container {
-          max-width: 560px;
+          max-width: 540px;
           margin: 40px auto;
           background: #ffffff;
           border: 1px solid #e5e5e5;
@@ -87,7 +89,7 @@ const sendVerificationEmail = async (toEmail, userName, verificationLink, type =
           line-height: 1.6;
         }
         .content h2 {
-          font-size: 18px;
+          font-size: 16px;
           font-weight: 700;
           text-transform: uppercase;
           letter-spacing: 0.1em;
@@ -99,21 +101,21 @@ const sendVerificationEmail = async (toEmail, userName, verificationLink, type =
           color: #404040;
           margin: 14px 0;
         }
-        .btn-wrapper {
+        .otp-box {
           text-align: center;
           margin: 32px 0;
         }
-        .verify-btn {
+        .otp-code {
           display: inline-block;
           background-color: #0a0a0a;
           color: #ffffff !important;
-          text-decoration: none;
-          font-size: 12px;
-          font-weight: 700;
-          letter-spacing: 0.2em;
-          text-transform: uppercase;
-          padding: 16px 36px;
-          border-radius: 2px;
+          font-size: 32px;
+          font-weight: 800;
+          letter-spacing: 12px;
+          padding: 18px 32px 18px 44px;
+          border-radius: 4px;
+          font-family: 'Courier New', Courier, monospace;
+          border: 1px solid #262626;
         }
         .note {
           font-size: 12px;
@@ -143,20 +145,15 @@ const sendVerificationEmail = async (toEmail, userName, verificationLink, type =
         </div>
         <div class="content">
           <h2>${heading}</h2>
-          <p>Hello ${recipientName},</p>
+          <p>Hello <strong>${recipientName}</strong>,</p>
           <p>${bodyText}</p>
           
-          <div class="btn-wrapper">
-            <a href="${verificationLink}" target="_blank" class="verify-btn">${buttonText}</a>
+          <div class="otp-box">
+            <div class="otp-code">${otpCode}</div>
           </div>
 
           <p class="note">
-            <strong>Security Notice:</strong> This verification link will expire in 24 hours. If you did not make this request with AURA, please disregard this email.
-          </p>
-
-          <p style="font-size: 12px; color: #737373; word-break: break-all; margin-top: 20px;">
-            If the button doesn't work, copy and paste this link into your browser:<br>
-            <a href="${verificationLink}" style="color: #0a0a0a;">${verificationLink}</a>
+            <strong>Security Notice:</strong> This 6-digit code will expire in <strong>15 minutes</strong>. For your security, never share this code with anyone.
           </p>
         </div>
         <div class="footer">
@@ -167,13 +164,12 @@ const sendVerificationEmail = async (toEmail, userName, verificationLink, type =
     </html>
   `;
 
-  // Always log to console for development / backup visibility
   console.log('\n============================================================');
-  console.log(`📧 [EMAIL VERIFICATION DISPATCHED (${isLogin ? 'LOGIN' : 'SIGNUP'})]`);
+  console.log(`🔐 [OTP CODE DISPATCHED (${isLogin ? 'LOGIN' : 'SIGNUP'})]`);
   console.log(`To: ${toEmail}`);
-  console.log(`Verification URL: ${verificationLink}`);
+  console.log(`OTP Code: ${otpCode}`);
   if (!transporter) {
-    console.log('⚠️ Notice: EMAIL_USER / EMAIL_PASS not set in .env. Email link printed above for testing.');
+    console.log('⚠️ Notice: EMAIL_USER / EMAIL_PASS not set in .env. OTP logged to console.');
   }
   console.log('============================================================\n');
 
@@ -181,8 +177,7 @@ const sendVerificationEmail = async (toEmail, userName, verificationLink, type =
     return {
       success: true,
       simulated: true,
-      message: 'Email credentials not provided in .env; verification link logged to console.',
-      verificationLink
+      otpCode
     };
   }
 
@@ -191,26 +186,76 @@ const sendVerificationEmail = async (toEmail, userName, verificationLink, type =
       from: `"AURA Luxury" <${process.env.EMAIL_USER}>`,
       to: toEmail,
       subject: emailSubject,
-      text: `Hello ${recipientName},\n\n${bodyText}\n\nClick the link below:\n${verificationLink}\n\nThis link will expire in 24 hours.\n\nThank you,\nAURA Studio`,
+      text: `Hello ${recipientName},\n\n${bodyText}\n\nYour 6-digit verification code is: ${otpCode}\n\nThis code will expire in 15 minutes.\n\nThank you,\nAURA Studio`,
       html: htmlContent,
     });
 
     return {
       success: true,
       messageId: info.messageId,
-      verificationLink
+      otpCode
     };
   } catch (err) {
-    console.error('❌ Nodemailer Error sending verification email:', err.message);
-    // Don't crash auth if email fails, return simulated so user can still see link in console
+    console.error('❌ Nodemailer Error sending OTP email:', err.message);
     return {
       success: false,
       error: err.message,
-      verificationLink
+      otpCode
     };
   }
 };
 
+/**
+ * Backward compatibility: Send an email verification link
+ */
+const sendVerificationEmail = async (toEmail, userName, verificationLink, type = 'signup') => {
+  const transporter = createTransporter();
+  const recipientName = (userName && userName.trim()) || 'Valued Member';
+  const isLogin = type === 'login';
+
+  const emailSubject = isLogin ? 'Verify Your AURA Sign In' : 'Verify Your AURA Account';
+  const heading = isLogin ? 'Sign In Verification' : 'Verify Your Email Address';
+  const bodyText = isLogin 
+    ? 'A sign in attempt was made for your account. Please click the button below to verify and log in to your account.'
+    : 'Welcome to AURA. Please verify your email address to activate your account and complete your sign in.';
+  const buttonText = isLogin ? 'Verify & Sign In' : 'Verify Account & Login';
+
+  const htmlContent = `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>${emailSubject}</title>
+    </head>
+    <body style="font-family: sans-serif; background: #f7f7f6; padding: 20px;">
+      <div style="max-width: 540px; margin: 0 auto; background: #fff; padding: 30px; border: 1px solid #eee;">
+        <h2>${heading}</h2>
+        <p>Hello ${recipientName},</p>
+        <p>${bodyText}</p>
+        <p><a href="${verificationLink}" style="background:#000; color:#fff; padding:12px 24px; text-decoration:none; display:inline-block;">${buttonText}</a></p>
+      </div>
+    </body>
+    </html>
+  `;
+
+  if (!transporter) return { success: true, simulated: true, verificationLink };
+
+  try {
+    const info = await transporter.sendMail({
+      from: `"AURA Luxury" <${process.env.EMAIL_USER}>`,
+      to: toEmail,
+      subject: emailSubject,
+      text: `${bodyText}\n\nLink: ${verificationLink}`,
+      html: htmlContent,
+    });
+    return { success: true, messageId: info.messageId, verificationLink };
+  } catch (err) {
+    console.error('Nodemailer Error:', err.message);
+    return { success: false, error: err.message, verificationLink };
+  }
+};
+
 module.exports = {
+  sendOtpEmail,
   sendVerificationEmail,
 };

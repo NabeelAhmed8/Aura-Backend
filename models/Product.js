@@ -6,14 +6,14 @@ const productSchema = new mongoose.Schema({
   category: { type: String, required: true },
   image: { type: String, required: true },
   description: { type: String },
-  stock: { 
-    type: Number, 
+  stock: {
+    type: Number,
     default: 10,
     min: [0, 'Stock cannot be negative']
   },
-  inStock: { 
-    type: Boolean, 
-    default: true 
+  inStock: {
+    type: Boolean,
+    default: true
   },
   isNewArrival: {
     type: Boolean,
@@ -22,6 +22,11 @@ const productSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+// Indexes for high-speed queries and sorting
+productSchema.index({ createdAt: -1 });
+productSchema.index({ isNewArrival: 1, createdAt: -1 });
+productSchema.index({ category: 1 });
 
 // Agar stock 0 ho toh inStock ko automatically false set karein
 productSchema.pre('save', function (next) {
