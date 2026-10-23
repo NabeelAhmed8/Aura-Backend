@@ -10,7 +10,7 @@ const app = express();
 app.set('trust proxy', 1);
 
 // 2. CORS (Cross-Origin Resource Sharing) Configuration
-// Production (Render.com), Preview Deployments (Vercel/Netlify), and Localhost Support
+// Production (Render.com), GitHub Pages (*.github.io), Vercel, Netlify, and Localhost Support
 const rawAllowedOrigins = [
   process.env.FRONTEND_URL,
   process.env.CLIENT_URL,
@@ -25,7 +25,15 @@ const rawAllowedOrigins = [
 
 const allowedOrigins = rawAllowedOrigins
   .filter(Boolean)
-  .map(url => url.trim().replace(/\/+$/, ''));
+  .flatMap(url => {
+    const trimmed = url.trim().replace(/\/+$/, '');
+    try {
+      const u = new URL(trimmed);
+      return [trimmed, u.origin];
+    } catch {
+      return [trimmed];
+    }
+  });
 
 const corsOptions = {
   origin: function (origin, callback) {
@@ -46,11 +54,9 @@ const corsOptions = {
       return callback(null, true);
     }
 
-    // D. Allow cloud deployment domains (Vercel, Netlify, Render preview & production)
+    // D. Allow cloud deployment & static host domains (GitHub Pages, Vercel, Netlify, Render)
     if (
-      /^https:\/\/([a-zA-Z0-9-]+\.)*vercel\.app$/.test(cleanOrigin) ||
-      /^https:\/\/([a-zA-Z0-9-]+\.)*onrender\.com$/.test(cleanOrigin) ||
-      /^https:\/\/([a-zA-Z0-9-]+\.)*netlify\.app$/.test(cleanOrigin)
+      /^https:\/\/([a-zA-Z0-9-]+\.)*(vercel\.app|onrender\.com|netlify\.app|github\.io)$/.test(cleanOrigin)
     ) {
       return callback(null, true);
     }
