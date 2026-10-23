@@ -98,9 +98,11 @@ app.use('/uploads', express.static('uploads'));
 
 // Root health check route (Railway health check / monitoring)
 app.get('/', (req, res) => {
+  const dbStates = { 0: 'disconnected', 1: 'connected', 2: 'connecting', 3: 'disconnecting' };
   res.status(200).json({
     status: 'success',
     message: 'AURA API Server is running successfully.',
+    database: dbStates[mongoose.connection.readyState] || 'unknown',
     environment: process.env.NODE_ENV || (process.env.RAILWAY_ENVIRONMENT ? 'production' : 'development'),
     timestamp: new Date().toISOString()
   });
@@ -152,9 +154,11 @@ const mongoUri = process.env.MONGO_URI || process.env.MONGO_URL || process.env.M
 if (!mongoUri) {
   console.error('WARNING: Neither MONGO_URI nor MONGO_URL found in environment variables!');
 } else {
-  mongoose.connect(mongoUri)
+  mongoose.connect(mongoUri, {
+    serverSelectionTimeoutMS: 5000
+  })
     .then(() => console.log('MongoDB Connected Successfully!'))
-    .catch((err) => console.log('DB Connection Error:', err));
+    .catch((err) => console.error('DB Connection Error:', err.message));
 }
 
 // 7. Server Start (Listen on 0.0.0.0 for Railway / Container environments)
