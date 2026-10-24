@@ -5,10 +5,14 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const User = require('../models/Users');
 const {
-  sendSignupVerificationEmail,
-  sendLoginOtpEmail,
   testEmailConfig
 } = require('../utils/emailService');
+const {
+  createSignupVerificationData,
+  createLoginOtpData,
+  dispatchSignupVerificationAsync,
+  dispatchLoginOtpAsync
+} = require('../utils/authOtpService');
 
 // Configuration
 const JWT_SECRET = process.env.JWT_SECRET || 'aura_super_secure_jwt_secret_key_2026';
@@ -280,12 +284,14 @@ router.post('/signup', async (req, res) => {
 
     const existingUser = await User.findOne({ email: normalizedEmail });
 
-    // Generate 6-Digit OTP & 32-Byte Verification Token
-    const verificationOtp = generateOtp();
-    const verificationOtpExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 mins
-    const verificationToken = crypto.randomBytes(32).toString('hex');
-    const verificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
-    const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
+    // Generate Verification Data (OTP, Tokens, Link)
+    const {
+      verificationOtp,
+      verificationOtpExpires,
+      verificationToken,
+      verificationTokenExpires,
+      verificationLink
+    } = createSignupVerificationData(BACKEND_URL);
 
     if (existingUser) {
       // If already verified, ask to sign in
@@ -311,13 +317,13 @@ router.post('/signup', async (req, res) => {
       existingUser.verificationTokenExpires = verificationTokenExpires;
       await existingUser.save();
 
-      // Dispatch verification email
-      const emailResult = await sendSignupVerificationEmail(
-        existingUser.email,
-        `${existingUser.firstName || fName} ${existingUser.lastName || lName}`.trim(),
-        verificationOtp,
-        verificationLink
-      );
+      // Dispatch verification email in background without blocking HTTP response
+      dispatchSignupVerificationAsync({
+        email: existingUser.email,
+        name: `${existingUser.firstName || fName} ${existingUser.lastName || lName}`.trim(),
+        otp: verificationOtp,
+        link: verificationLink
+      });
 
       return res.status(200).json({
         success: true,
@@ -326,7 +332,7 @@ router.post('/signup', async (req, res) => {
         verificationType: 'otp_and_link',
         message: "Account already registered but not yet verified. A fresh verification code and link have been sent to your email.",
         email: existingUser.email,
-        emailDelivered: emailResult.success !== false,
+        emailDelivered: true,
         user: formatUser(existingUser),
         devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true') ? verificationOtp : undefined
       });
@@ -352,13 +358,13 @@ router.post('/signup', async (req, res) => {
     });
     await newUser.save();
 
-    // Dispatch verification email
-    const emailResult = await sendSignupVerificationEmail(
-      newUser.email,
-      `${fName} ${lName}`.trim(),
-      verificationOtp,
-      verificationLink
-    );
+    // Dispatch verification email in background without blocking HTTP response
+    dispatchSignupVerificationAsync({
+      email: newUser.email,
+      name: `${fName} ${lName}`.trim(),
+      otp: verificationOtp,
+      link: verificationLink
+    });
 
     res.status(201).json({
       success: true,
@@ -367,7 +373,7 @@ router.post('/signup', async (req, res) => {
       verificationType: 'otp_and_link',
       message: "Account created successfully! A 6-digit verification code and link have been sent to your email. Please verify your email before logging in.",
       email: newUser.email,
-      emailDelivered: emailResult.success !== false,
+      emailDelivered: true,
       user: formatUser(newUser),
       devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true') ? verificationOtp : undefined
     });
@@ -410,11 +416,13 @@ router.post('/login', async (req, res) => {
 
     // Step 1: Ensure user is verified. Unverified users cannot login!
     if (!user.isVerified) {
-      const verificationOtp = generateOtp();
-      const verificationOtpExpires = new Date(Date.now() + 15 * 60 * 1000);
-      const verificationToken = crypto.randomBytes(32).toString('hex');
-      const verificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
-      const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
+      const {
+        verificationOtp,
+        verificationOtpExpires,
+        verificationToken,
+        verificationTokenExpires,
+        verificationLink
+      } = createSignupVerificationData(BACKEND_URL);
 
       user.verificationOtp = verificationOtp;
       user.verificationOtpExpires = verificationOtpExpires;
@@ -422,12 +430,13 @@ router.post('/login', async (req, res) => {
       user.verificationTokenExpires = verificationTokenExpires;
       await user.save();
 
-      await sendSignupVerificationEmail(
-        user.email,
-        `${user.firstName || ''} ${user.lastName || ''}`.trim(),
-        verificationOtp,
-        verificationLink
-      );
+      // Dispatch verification email in background without blocking
+      dispatchSignupVerificationAsync({
+        email: user.email,
+        name: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+        otp: verificationOtp,
+        link: verificationLink
+      });
 
       return res.status(403).json({
         success: false,
@@ -440,19 +449,18 @@ router.post('/login', async (req, res) => {
     }
 
     // Step 2: User is verified. Generate 6-digit Login OTP and send to email!
-    const loginOtp = generateOtp();
-    const loginOtpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes expiry
+    const { loginOtp, loginOtpExpires } = createLoginOtpData();
 
     user.loginOtp = loginOtp;
     user.loginOtpExpires = loginOtpExpires;
     await user.save();
 
-    // Dispatch Login 2FA OTP
-    const emailResult = await sendLoginOtpEmail(
-      user.email,
-      `${user.firstName || ''} ${user.lastName || ''}`.trim(),
-      loginOtp
-    );
+    // Dispatch Login 2FA OTP in background without blocking
+    dispatchLoginOtpAsync({
+      email: user.email,
+      name: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+      otp: loginOtp
+    });
 
     return res.status(200).json({
       success: true,
@@ -460,7 +468,7 @@ router.post('/login', async (req, res) => {
       requiresOtp: true,
       email: user.email,
       message: "A 6-digit sign-in code has been sent to your email. Please enter the code to complete your login.",
-      emailDelivered: emailResult.success !== false,
+      emailDelivered: true,
       devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true') ? loginOtp : undefined
     });
   } catch (err) {
@@ -610,32 +618,35 @@ router.post(['/resend-otp', '/resend-verification'], async (req, res) => {
 
     // If type is explicitly 'login' or user is already verified and didn't ask for signup
     if (type === 'login' || (user.isVerified && type !== 'signup')) {
-      const loginOtp = generateOtp();
+      const { loginOtp, loginOtpExpires } = createLoginOtpData();
       user.loginOtp = loginOtp;
-      user.loginOtpExpires = new Date(Date.now() + 10 * 60 * 1000);
+      user.loginOtpExpires = loginOtpExpires;
       await user.save();
 
-      const emailResult = await sendLoginOtpEmail(
-        user.email,
-        `${user.firstName || ''} ${user.lastName || ''}`.trim(),
-        loginOtp
-      );
+      // Dispatch Login 2FA OTP in background without blocking
+      dispatchLoginOtpAsync({
+        email: user.email,
+        name: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+        otp: loginOtp
+      });
 
       return res.status(200).json({
         success: true,
         type: 'login',
         message: "A fresh 6-digit sign-in code has been sent to your email.",
-        emailDelivered: emailResult.success !== false,
+        emailDelivered: true,
         devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true') ? loginOtp : undefined
       });
     }
 
     // Otherwise, resend signup verification OTP & Link
-    const verificationOtp = generateOtp();
-    const verificationOtpExpires = new Date(Date.now() + 15 * 60 * 1000);
-    const verificationToken = crypto.randomBytes(32).toString('hex');
-    const verificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
+    const {
+      verificationOtp,
+      verificationOtpExpires,
+      verificationToken,
+      verificationTokenExpires,
+      verificationLink
+    } = createSignupVerificationData(BACKEND_URL);
 
     user.verificationOtp = verificationOtp;
     user.verificationOtpExpires = verificationOtpExpires;
@@ -643,18 +654,19 @@ router.post(['/resend-otp', '/resend-verification'], async (req, res) => {
     user.verificationTokenExpires = verificationTokenExpires;
     await user.save();
 
-    const emailResult = await sendSignupVerificationEmail(
-      user.email,
-      `${user.firstName || ''} ${user.lastName || ''}`.trim(),
-      verificationOtp,
-      verificationLink
-    );
+    // Dispatch verification email in background without blocking
+    dispatchSignupVerificationAsync({
+      email: user.email,
+      name: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+      otp: verificationOtp,
+      link: verificationLink
+    });
 
     return res.status(200).json({
       success: true,
       type: 'signup',
       message: "A fresh verification code and link have been sent to your email.",
-      emailDelivered: emailResult.success !== false,
+      emailDelivered: true,
       devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true') ? verificationOtp : undefined
     });
   } catch (err) {

@@ -28,42 +28,49 @@ const createTransporter = () => {
   emailPass = emailPass.replace(/\s+/g, '');
 
   const smtpHost = process.env.EMAIL_HOST || 'smtp.gmail.com';
-  const smtpPort = parseInt(process.env.EMAIL_PORT || '587', 10);
+  // Use port 465 (Direct SSL) by default for Gmail or when specified; port 587 for custom STARTTLS
+  const defaultPort = (smtpHost.includes('gmail.com')) ? 465 : 587;
+  const smtpPort = parseInt(process.env.EMAIL_PORT || String(defaultPort), 10);
   const isSecure = smtpPort === 465;
 
-  const transportConfig = process.env.EMAIL_SERVICE === 'gmail' && !process.env.EMAIL_HOST
-    ? {
-        service: 'gmail',
-        auth: {
-          user: emailUser,
-          pass: emailPass,
-        },
-      }
-    : {
-        host: smtpHost,
-        port: smtpPort,
-        secure: isSecure,
-        auth: {
-          user: emailUser,
-          pass: emailPass,
-        },
-        requireTLS: smtpPort === 587,
-        pool: true,
-        maxConnections: 3,
-        maxMessages: 100,
-        rateLimit: 5,
-        rateDelta: 1000,
-        connectionTimeout: 10000,
-        greetingTimeout: 5000,
-        socketTimeout: 15000,
-        tls: {
-          rejectUnauthorized: false
-        }
-      };
+  const transportConfig = {
+    host: smtpHost,
+    port: smtpPort,
+    secure: isSecure,
+    auth: {
+      user: emailUser,
+      pass: emailPass,
+    },
+    pool: true,
+    maxConnections: 5,
+    maxMessages: 200,
+    connectionTimeout: 8000,
+    greetingTimeout: 5000,
+    socketTimeout: 15000,
+    tls: {
+      rejectUnauthorized: false
+    }
+  };
 
   cachedTransporter = nodemailer.createTransport(transportConfig);
   return cachedTransporter;
 };
+
+// Pre-warm SMTP connection pool in background on startup
+try {
+  const initialTransporter = createTransporter();
+  if (initialTransporter && typeof initialTransporter.verify === 'function') {
+    initialTransporter.verify()
+      .then(() => {
+        console.log('⚡ [Email Service] SMTP connection pre-warmed & verified.');
+      })
+      .catch((err) => {
+        console.warn('⚠️ [Email Service] Warmup connection verify notice:', err.message);
+      });
+  }
+} catch {
+  // Graceful fallback
+}
 
 /**
  * Dispatch an email via Nodemailer
