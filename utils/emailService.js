@@ -1,75 +1,103 @@
-require('dotenv').config();
-const { Resend } = require('resend');
+const dns = require('dns');
+if (dns.setDefaultResultOrder) {
+  // Prevent IPv6 timeout delays on cloud containers
+  dns.setDefaultResultOrder('ipv4first');
+}
 
-// Initialize Resend Client
-const getResendClient = () => {
-  const apiKey = process.env.RESEND_API_KEY ? process.env.RESEND_API_KEY.trim() : '';
-  if (!apiKey) {
+require('dotenv').config();
+const nodemailer = require('nodemailer');
+
+let cachedTransporter = null;
+
+/**
+ * Create or reuse pooled Nodemailer transporter
+ */
+const createTransporter = () => {
+  const emailUser = process.env.EMAIL_USER ? process.env.EMAIL_USER.trim() : '';
+  let emailPass = process.env.EMAIL_PASS ? String(process.env.EMAIL_PASS).trim() : '';
+
+  if (!emailUser || !emailPass) {
     return null;
   }
-  return new Resend(apiKey);
-};
 
-// Default sender address
-const getSender = () => {
-  return process.env.RESEND_FROM || 'AURA Luxury <onboarding@resend.dev>';
+  if (cachedTransporter) {
+    return cachedTransporter;
+  }
+
+  // Strip spaces from Google App Password (e.g. "fckq aehq jlho ervb" -> "fckqaehqjlhoervb")
+  emailPass = emailPass.replace(/\s+/g, '');
+
+  const smtpHost = process.env.EMAIL_HOST || 'smtp.gmail.com';
+  const smtpPort = parseInt(process.env.EMAIL_PORT || '465', 10);
+  const isSecure = smtpPort === 465 || process.env.EMAIL_SECURE === 'true';
+
+  cachedTransporter = nodemailer.createTransport({
+    host: smtpHost,
+    port: smtpPort,
+    secure: isSecure,
+    auth: {
+      user: emailUser,
+      pass: emailPass,
+    },
+    pool: true,
+    maxConnections: 3,
+    maxMessages: 100,
+    rateLimit: 5,
+    rateDelta: 1000,
+    connectionTimeout: 10000,
+    greetingTimeout: 5000,
+    socketTimeout: 12000,
+    tls: {
+      rejectUnauthorized: false
+    }
+  });
+
+  return cachedTransporter;
 };
 
 /**
- * Dispatch an email via official Resend SDK
- * @param {Object} options
- * @param {string} options.toEmail
- * @param {string} options.subject
- * @param {string} options.htmlContent
- * @param {string} options.textContent
+ * Dispatch an email via Nodemailer
  */
-const sendViaResend = async ({ toEmail, subject, htmlContent, textContent }) => {
-  const apiKey = process.env.RESEND_API_KEY ? process.env.RESEND_API_KEY.trim() : '';
-  
-  if (!apiKey) {
-    console.warn('⚠️ [Resend Service] RESEND_API_KEY is not defined in environment variables.');
+const dispatchEmail = async ({ toEmail, subject, htmlContent, textContent }) => {
+  const transporter = createTransporter();
+
+  if (!transporter) {
+    const errorMsg = 'Nodemailer credentials not configured. Please set EMAIL_USER and EMAIL_PASS in your .env file.';
+    console.warn(`⚠️ [Email Service] ${errorMsg}`);
     return {
       success: false,
-      provider: 'resend',
-      warning: 'RESEND_API_KEY is missing. Add your API key from https://resend.com/api-keys to .env',
+      provider: 'nodemailer',
+      warning: errorMsg,
       simulated: true
     };
   }
 
-  const resend = new Resend(apiKey);
-  const from = getSender();
+  const senderEmail = (process.env.EMAIL_USER || 'no-reply@auraclothing.com').trim();
+  const senderName = process.env.EMAIL_SENDER_NAME || 'AURA Luxury';
+  const fromAddress = `"${senderName}" <${senderEmail}>`;
 
-  const { data, error } = await resend.emails.send({
-    from,
-    to: [toEmail.trim()],
+  const info = await transporter.sendMail({
+    from: fromAddress,
+    to: toEmail.trim(),
     subject,
-    html: htmlContent,
     text: textContent,
+    html: htmlContent,
   });
 
-  if (error) {
-    console.error('❌ [Resend Service] Resend API Error:', error);
-    throw new Error(error.message || 'Failed to dispatch email via Resend API');
-  }
-
-  console.log(`✅ [Resend Service] Email successfully sent to ${toEmail} via Resend. ID: ${data?.id}`);
+  console.log(`✅ [Email Service] Email successfully sent to ${toEmail} via Nodemailer. ID: ${info.messageId}`);
   return {
     success: true,
-    provider: 'resend',
-    messageId: data?.id || 'resend-dispatched'
+    provider: 'nodemailer',
+    messageId: info.messageId
   };
 };
 
 /**
  * Send Signup Email Verification (Includes both 6-Digit OTP & One-Click Verification Link)
- * @param {string} toEmail
- * @param {string} userName
- * @param {string} otpCode
- * @param {string} verificationLink
  */
 const sendSignupVerificationEmail = async (toEmail, userName, otpCode, verificationLink) => {
   console.log(`\n======================================================`);
-  console.log(`📧 [RESEND.COM SIGNUP VERIFICATION]`);
+  console.log(`📧 [AURA SIGNUP VERIFICATION EMAIL]`);
   console.log(`👤 Recipient: ${toEmail}`);
   console.log(`🔐 OTP Code:  ${otpCode}`);
   if (verificationLink) console.log(`🔗 Link:      ${verificationLink}`);
@@ -243,7 +271,7 @@ const sendSignupVerificationEmail = async (toEmail, userName, otpCode, verificat
           </p>
         </div>
         <div class="footer">
-          &copy; ${new Date().getFullYear()} AURA Clothing Brand. Powered by Resend.
+          &copy; ${new Date().getFullYear()} AURA Clothing Brand. All rights reserved.
         </div>
       </div>
     </body>
@@ -251,7 +279,7 @@ const sendSignupVerificationEmail = async (toEmail, userName, otpCode, verificat
   `;
 
   try {
-    const result = await sendViaResend({
+    const result = await dispatchEmail({
       toEmail,
       subject: emailSubject,
       htmlContent,
@@ -260,35 +288,27 @@ const sendSignupVerificationEmail = async (toEmail, userName, otpCode, verificat
 
     return {
       success: true,
-      provider: 'resend',
+      provider: 'nodemailer',
       messageId: result.messageId,
       otpCode
     };
   } catch (err) {
-    const isDomainRestriction = err.message && err.message.includes('You can only send testing emails to your own email address');
-    if (isDomainRestriction) {
-      console.warn(`\n⚠️ [Resend Domain Notice]: Free Resend testing domain (onboarding@resend.dev) only allows sending to the Resend account owner.`);
-      console.warn(`👉 To send emails to ANY customer/user email address, add & verify a custom domain at https://resend.com/domains\n`);
-    }
+    console.error(`❌ [Email Service] Error sending signup email to ${toEmail}:`, err.message);
     return {
       success: false,
-      provider: 'resend',
+      provider: 'nodemailer',
       error: err.message,
-      isDomainRestriction,
       otpCode
     };
   }
 };
 
 /**
- * Send Login 2FA OTP Code via Resend
- * @param {string} toEmail
- * @param {string} userName
- * @param {string} otpCode
+ * Send Login 2FA OTP Code via Nodemailer
  */
 const sendLoginOtpEmail = async (toEmail, userName, otpCode) => {
   console.log(`\n======================================================`);
-  console.log(`🔐 [RESEND.COM SIGN-IN OTP CODE]`);
+  console.log(`🔐 [AURA SIGN-IN OTP CODE]`);
   console.log(`👤 Recipient: ${toEmail}`);
   console.log(`🔑 Login Code: ${otpCode}`);
   console.log(`======================================================\n`);
@@ -415,7 +435,7 @@ const sendLoginOtpEmail = async (toEmail, userName, otpCode) => {
           </p>
         </div>
         <div class="footer">
-          &copy; ${new Date().getFullYear()} AURA Clothing Brand. Powered by Resend.
+          &copy; ${new Date().getFullYear()} AURA Clothing Brand. All rights reserved.
         </div>
       </div>
     </body>
@@ -423,7 +443,7 @@ const sendLoginOtpEmail = async (toEmail, userName, otpCode) => {
   `;
 
   try {
-    const result = await sendViaResend({
+    const result = await dispatchEmail({
       toEmail,
       subject: emailSubject,
       htmlContent,
@@ -432,68 +452,63 @@ const sendLoginOtpEmail = async (toEmail, userName, otpCode) => {
 
     return {
       success: true,
-      provider: 'resend',
+      provider: 'nodemailer',
       messageId: result.messageId,
       otpCode
     };
   } catch (err) {
-    const isDomainRestriction = err.message && err.message.includes('You can only send testing emails to your own email address');
-    if (isDomainRestriction) {
-      console.warn(`\n⚠️ [Resend Domain Notice]: Free Resend testing domain (onboarding@resend.dev) only allows sending to the Resend account owner.`);
-      console.warn(`👉 To send emails to ANY customer/user email address, add & verify a custom domain at https://resend.com/domains\n`);
-    }
+    console.error(`❌ [Email Service] Error sending login OTP email to ${toEmail}:`, err.message);
     return {
       success: false,
-      provider: 'resend',
+      provider: 'nodemailer',
       error: err.message,
-      isDomainRestriction,
       otpCode
     };
   }
 };
 
 /**
- * Diagnostic tool to verify live Resend configuration & optionally send test email
+ * Diagnostic tool to verify live Nodemailer SMTP configuration & optionally send test email
  */
 const testEmailConfig = async (toEmail) => {
-  const apiKey = process.env.RESEND_API_KEY ? process.env.RESEND_API_KEY.trim() : '';
+  const emailUser = process.env.EMAIL_USER;
+  const emailPass = process.env.EMAIL_PASS;
 
-  if (!apiKey) {
+  if (!emailUser || !emailPass) {
     return {
       configured: false,
-      activeProvider: 'resend',
+      activeProvider: 'nodemailer',
       verified: false,
-      error: 'RESEND_API_KEY is missing. Please set RESEND_API_KEY in your .env file or Railway variables.',
-      instructions: 'Get your API key at https://resend.com/api-keys'
+      error: 'EMAIL_USER or EMAIL_PASS missing in environment variables.'
     };
   }
 
   try {
-    const resend = new Resend(apiKey);
-    
+    const transporter = createTransporter();
+    await transporter.verify();
+
     let sendResult = null;
     if (toEmail) {
-      sendResult = await sendViaResend({
+      sendResult = await dispatchEmail({
         toEmail: toEmail.trim(),
-        subject: 'AURA - Resend.com Test Email',
-        textContent: 'This is a test email confirming that Resend.com is properly configured for AURA Clothing Brand.',
-        htmlContent: '<p>This is a test email confirming that <strong>Resend.com</strong> is properly configured for AURA Clothing Brand.</p>'
+        subject: 'AURA - Nodemailer Test Email',
+        textContent: 'This is a test email confirming that Nodemailer is properly configured for AURA Clothing Brand.',
+        htmlContent: '<p>This is a test email confirming that <strong>Nodemailer</strong> is properly configured for AURA Clothing Brand.</p>'
       });
     }
 
     return {
       configured: true,
       verified: true,
-      activeProvider: 'resend',
-      apiKeyPreview: `${apiKey.slice(0, 5)}...${apiKey.slice(-4)}`,
-      fromAddress: getSender(),
+      activeProvider: 'nodemailer',
+      senderEmail: emailUser,
       sendResult
     };
   } catch (err) {
     return {
       configured: true,
       verified: false,
-      activeProvider: 'resend',
+      activeProvider: 'nodemailer',
       error: err.message
     };
   }
@@ -517,6 +532,7 @@ module.exports = {
   sendLoginOtpEmail,
   sendOtpEmail,
   sendVerificationEmail,
-  sendViaResend,
+  dispatchEmail,
+  createTransporter,
   testEmailConfig
 };

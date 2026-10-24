@@ -49,7 +49,8 @@ const getCookieOptions = () => ({
 // Helper: Cookie clear options
 const getClearCookieOptions = () => ({
   httpOnly: true,
-  secure: (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true' || Boolean(process.env.RAILWAY_ENVIRONMENT) || Boolean(process.env.RAILWAY_STATIC_URL)) ? 'none' : 'lax'
+  secure: (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true' || Boolean(process.env.RAILWAY_ENVIRONMENT) || Boolean(process.env.RAILWAY_STATIC_URL)),
+  sameSite: (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true' || Boolean(process.env.RAILWAY_ENVIRONMENT) || Boolean(process.env.RAILWAY_STATIC_URL)) ? 'none' : 'lax'
 });
 
 // Helper to format sanitized user object
@@ -199,7 +200,7 @@ router.get('/check-email', async (req, res) => {
   }
 });
 
-// 2E. Verify Email by Token (Resend Clickable Link Handler)
+// 2E. Verify Email by Token (Clickable Email Link Handler)
 router.get('/verify-email', async (req, res) => {
   try {
     const { token } = req.query;
@@ -234,7 +235,7 @@ router.get('/verify-email', async (req, res) => {
   }
 });
 
-// 2F. Diagnostic Route: Check Resend API key & connectivity
+// 2F. Diagnostic Route: Check email configuration & send test email
 router.get('/email-status', async (req, res) => {
   try {
     const { to } = req.query;
@@ -249,7 +250,7 @@ router.get('/email-status', async (req, res) => {
 // 3. POST ROUTES
 // ==========================================
 
-// 3A. SIGNUP ROUTE (Register new user with Resend email verification code & link)
+// 3A. SIGNUP ROUTE (Register new user with email verification code & link)
 router.post('/signup', async (req, res) => {
   try {
     const { email, password, firstName, lastName, name, phone, dateOfBirth, gender } = req.body;
@@ -310,7 +311,7 @@ router.post('/signup', async (req, res) => {
       existingUser.verificationTokenExpires = verificationTokenExpires;
       await existingUser.save();
 
-      // Dispatch verification email via Resend
+      // Dispatch verification email
       const emailResult = await sendSignupVerificationEmail(
         existingUser.email,
         `${existingUser.firstName || fName} ${existingUser.lastName || lName}`.trim(),
@@ -318,25 +319,16 @@ router.post('/signup', async (req, res) => {
         verificationLink
       );
 
-      const isDelivered = emailResult.success !== false;
-      let msg = "Account already registered but not yet verified. A fresh verification code and link have been sent to your email via Resend.";
-      if (!isDelivered) {
-        if (emailResult.isDomainRestriction || (emailResult.error && emailResult.error.includes('You can only send testing emails'))) {
-          msg = `Account registered! NOTE: Resend is in free testing mode with onboarding@resend.dev (delivers only to the Resend account owner). To deliver to all user emails, add your domain at resend.com/domains.`;
-        }
-      }
-
       return res.status(200).json({
         success: true,
         requiresVerification: true,
         verificationRequired: true,
         verificationType: 'otp_and_link',
-        message: msg,
+        message: "Account already registered but not yet verified. A fresh verification code and link have been sent to your email.",
         email: existingUser.email,
-        emailDelivered: isDelivered,
-        emailError: !isDelivered ? emailResult.error : undefined,
+        emailDelivered: emailResult.success !== false,
         user: formatUser(existingUser),
-        devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true' || !isDelivered) ? verificationOtp : undefined
+        devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true') ? verificationOtp : undefined
       });
     }
 
@@ -360,7 +352,7 @@ router.post('/signup', async (req, res) => {
     });
     await newUser.save();
 
-    // Dispatch verification email via Resend
+    // Dispatch verification email
     const emailResult = await sendSignupVerificationEmail(
       newUser.email,
       `${fName} ${lName}`.trim(),
@@ -368,25 +360,16 @@ router.post('/signup', async (req, res) => {
       verificationLink
     );
 
-    const isDelivered = emailResult.success !== false;
-    let msg = "Account created successfully! A 6-digit verification code and link have been sent to your email via Resend. Please verify your email before logging in.";
-    if (!isDelivered) {
-      if (emailResult.isDomainRestriction || (emailResult.error && emailResult.error.includes('You can only send testing emails'))) {
-        msg = `Account created! NOTE: Resend is in free testing mode with onboarding@resend.dev (delivers only to the Resend account owner). To deliver to all user emails, add your domain at resend.com/domains.`;
-      }
-    }
-
     res.status(201).json({
       success: true,
       requiresVerification: true,
       verificationRequired: true,
       verificationType: 'otp_and_link',
-      message: msg,
+      message: "Account created successfully! A 6-digit verification code and link have been sent to your email. Please verify your email before logging in.",
       email: newUser.email,
-      emailDelivered: isDelivered,
-      emailError: !isDelivered ? emailResult.error : undefined,
+      emailDelivered: emailResult.success !== false,
       user: formatUser(newUser),
-      devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true' || !isDelivered) ? verificationOtp : undefined
+      devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true') ? verificationOtp : undefined
     });
   } catch (err) {
     console.error('Signup error:', err);
@@ -394,7 +377,7 @@ router.post('/signup', async (req, res) => {
   }
 });
 
-// 3B. LOGIN ROUTE (Validate credentials, check isVerified, send 6-digit Login OTP via Resend)
+// 3B. LOGIN ROUTE (Validate credentials, check isVerified, send 6-digit Login OTP via Nodemailer)
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -439,32 +422,24 @@ router.post('/login', async (req, res) => {
       user.verificationTokenExpires = verificationTokenExpires;
       await user.save();
 
-      const emailResult = await sendSignupVerificationEmail(
+      await sendSignupVerificationEmail(
         user.email,
         `${user.firstName || ''} ${user.lastName || ''}`.trim(),
         verificationOtp,
         verificationLink
       );
 
-      const isDelivered = emailResult.success !== false;
-      let msg = "Your email address is not verified yet. We have sent a verification code to your email via Resend. Please verify your email before logging in.";
-      if (!isDelivered && (emailResult.isDomainRestriction || (emailResult.error && emailResult.error.includes('You can only send testing emails')))) {
-        msg = `Your email is not verified yet. NOTE: Resend is in free testing mode with onboarding@resend.dev (delivers only to the Resend account owner). Add a custom domain at resend.com/domains to deliver to all users.`;
-      }
-
       return res.status(403).json({
         success: false,
         requiresVerification: true,
         verificationRequired: true,
-        message: msg,
+        message: "Your email address is not verified yet. We have sent a verification code to your email. Please verify your email before logging in.",
         email: user.email,
-        emailDelivered: isDelivered,
-        emailError: !isDelivered ? emailResult.error : undefined,
-        devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true' || !isDelivered) ? verificationOtp : undefined
+        devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true') ? verificationOtp : undefined
       });
     }
 
-    // Step 2: User is verified. Generate 6-digit Login OTP and send via Resend!
+    // Step 2: User is verified. Generate 6-digit Login OTP and send to email!
     const loginOtp = generateOtp();
     const loginOtpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes expiry
 
@@ -472,28 +447,21 @@ router.post('/login', async (req, res) => {
     user.loginOtpExpires = loginOtpExpires;
     await user.save();
 
-    // Dispatch Login 2FA OTP via Resend
+    // Dispatch Login 2FA OTP
     const emailResult = await sendLoginOtpEmail(
       user.email,
       `${user.firstName || ''} ${user.lastName || ''}`.trim(),
       loginOtp
     );
 
-    const isDelivered = emailResult.success !== false;
-    let msg = "A 6-digit sign-in code has been sent to your email via Resend. Please enter the code to complete your login.";
-    if (!isDelivered && (emailResult.isDomainRestriction || (emailResult.error && emailResult.error.includes('You can only send testing emails')))) {
-      msg = `Sign-in initiated! NOTE: Resend is in free testing mode with onboarding@resend.dev (delivers only to the Resend account owner). To deliver to all user emails, add your domain at resend.com/domains.`;
-    }
-
     return res.status(200).json({
       success: true,
       requiresLoginOtp: true,
       requiresOtp: true,
       email: user.email,
-      message: msg,
-      emailDelivered: isDelivered,
-      emailError: !isDelivered ? emailResult.error : undefined,
-      devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true' || !isDelivered) ? loginOtp : undefined
+      message: "A 6-digit sign-in code has been sent to your email. Please enter the code to complete your login.",
+      emailDelivered: emailResult.success !== false,
+      devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true') ? loginOtp : undefined
     });
   } catch (err) {
     console.error('Login error:', err);
@@ -501,7 +469,7 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// 3C. VERIFY LOGIN OTP ROUTE (Completes login after user enters 6-digit code received via Resend)
+// 3C. VERIFY LOGIN OTP ROUTE (Completes login after user enters 6-digit code)
 router.post('/verify-login-otp', async (req, res) => {
   try {
     const { email, otp } = req.body;
@@ -616,7 +584,7 @@ router.post('/verify-otp', async (req, res) => {
 
     return res.status(400).json({
       success: false,
-      error: "Invalid code. Please check your email and enter the latest 6-digit code sent via Resend."
+      error: "Invalid code. Please check your email and enter the latest 6-digit code."
     });
   } catch (err) {
     console.error("Verify OTP error:", err);
@@ -624,7 +592,7 @@ router.post('/verify-otp', async (req, res) => {
   }
 });
 
-// 3E. RESEND OTP / VERIFICATION CODE ROUTE (Supports both Login 2FA OTP and Signup Verification via Resend)
+// 3E. RESEND OTP / VERIFICATION CODE ROUTE (Supports both Login 2FA OTP and Signup Verification)
 router.post(['/resend-otp', '/resend-verification'], async (req, res) => {
   try {
     const { email, type } = req.body;
@@ -653,19 +621,12 @@ router.post(['/resend-otp', '/resend-verification'], async (req, res) => {
         loginOtp
       );
 
-      const isDelivered = emailResult.success !== false;
-      let msg = "A fresh 6-digit sign-in code has been sent to your email via Resend.";
-      if (!isDelivered && (emailResult.isDomainRestriction || (emailResult.error && emailResult.error.includes('You can only send testing emails')))) {
-        msg = `Fresh sign-in code generated! NOTE: Resend is in free testing mode with onboarding@resend.dev (delivers only to the Resend account owner).`;
-      }
-
       return res.status(200).json({
         success: true,
         type: 'login',
-        message: msg,
-        emailDelivered: isDelivered,
-        emailError: !isDelivered ? emailResult.error : undefined,
-        devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true' || !isDelivered) ? loginOtp : undefined
+        message: "A fresh 6-digit sign-in code has been sent to your email.",
+        emailDelivered: emailResult.success !== false,
+        devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true') ? loginOtp : undefined
       });
     }
 
@@ -689,19 +650,12 @@ router.post(['/resend-otp', '/resend-verification'], async (req, res) => {
       verificationLink
     );
 
-    const isDelivered = emailResult.success !== false;
-    let msg = "A fresh verification code and link have been sent to your email via Resend.";
-    if (!isDelivered && (emailResult.isDomainRestriction || (emailResult.error && emailResult.error.includes('You can only send testing emails')))) {
-      msg = `Fresh verification code generated! NOTE: Resend is in free testing mode with onboarding@resend.dev (delivers only to the Resend account owner).`;
-    }
-
     return res.status(200).json({
       success: true,
       type: 'signup',
-      message: msg,
-      emailDelivered: isDelivered,
-      emailError: !isDelivered ? emailResult.error : undefined,
-      devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true' || !isDelivered) ? verificationOtp : undefined
+      message: "A fresh verification code and link have been sent to your email.",
+      emailDelivered: emailResult.success !== false,
+      devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true') ? verificationOtp : undefined
     });
   } catch (err) {
     console.error('Resend OTP error:', err);
