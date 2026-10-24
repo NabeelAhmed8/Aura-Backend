@@ -283,31 +283,24 @@ router.post('/signup', async (req, res) => {
         if (parsedDob) existingUser.dateOfBirth = parsedDob;
         if (gender) existingUser.gender = gender;
 
-        const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-        const otpExpires = new Date(Date.now() + 15 * 60 * 1000);
-        existingUser.verificationOtp = otpCode;
-        existingUser.verificationOtpExpires = otpExpires;
-        existingUser.verificationToken = otpCode;
-        existingUser.verificationTokenExpires = otpExpires;
+        const verificationToken = crypto.randomBytes(32).toString('hex');
+        const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        existingUser.verificationToken = verificationToken;
+        existingUser.verificationTokenExpires = verificationExpires;
         await existingUser.save();
 
-        const emailResult = await sendOtpEmail(existingUser.email, `${existingUser.firstName || fName} ${existingUser.lastName || lName}`.trim(), otpCode, 'signup');
-        if (!emailResult.success) {
-          console.error('❌ Failed to send re-signup OTP email:', emailResult.error);
-          return res.status(500).json({
-            success: false,
-            error: `Failed to send verification email: ${emailResult.error}. Please ensure EMAIL_USER and EMAIL_PASS are set in Railway Variables.`
-          });
-        }
+        const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
+        await sendVerificationEmail(existingUser.email, `${existingUser.firstName || fName} ${existingUser.lastName || lName}`.trim(), verificationLink, 'signup');
 
         return res.status(200).json({
           success: true,
           requiresVerification: true,
           verificationRequired: true,
-          verificationType: 'otp',
-          message: "Verification code sent to your email. Please check your inbox.",
+          verificationType: 'link',
+          message: "A verification link has been sent to your email. Please check your inbox and click the link to activate your account.",
           email: existingUser.email,
-          user: formatUser(existingUser)
+          user: formatUser(existingUser),
+          verificationLink: process.env.NODE_ENV !== 'production' ? verificationLink : undefined
         });
       }
 
@@ -318,9 +311,9 @@ router.post('/signup', async (req, res) => {
     const salt = await bcrypt.genSalt(SALT_ROUNDS);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // 15 Minutes ke liye 6-digit OTP Code generate karein
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const otpExpires = new Date(Date.now() + 15 * 60 * 1000);
+    // 24 Hours ke liye Verification Token generate karein
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
     const newUser = new User({
       email: normalizedEmail,
@@ -331,31 +324,23 @@ router.post('/signup', async (req, res) => {
       dateOfBirth: parsedDob,
       gender: gender || '',
       isVerified: false,
-      verificationOtp: otpCode,
-      verificationOtpExpires: otpExpires,
-      verificationToken: otpCode,
-      verificationTokenExpires: otpExpires,
+      verificationToken: verificationToken,
+      verificationTokenExpires: verificationExpires,
     });
     await newUser.save();
 
-    // Nodemailer ke zariye 6-digit OTP code bhejein (Fast delivery)
-    const emailResult = await sendOtpEmail(newUser.email, `${fName} ${lName}`.trim(), otpCode, 'signup');
-    if (!emailResult.success) {
-      console.error('❌ Failed to send signup OTP email:', emailResult.error);
-      return res.status(500).json({
-        success: false,
-        error: `Failed to send verification email: ${emailResult.error}. Please ensure EMAIL_USER and EMAIL_PASS are set in Railway Variables.`
-      });
-    }
+    const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
+    await sendVerificationEmail(newUser.email, `${fName} ${lName}`.trim(), verificationLink, 'signup');
 
     res.status(201).json({
       success: true,
       requiresVerification: true,
       verificationRequired: true,
-      verificationType: 'otp',
-      message: "Account created successfully! A 6-digit verification code has been sent to your email.",
+      verificationType: 'link',
+      message: "Account created successfully! A verification link has been sent to your email. Please check your inbox and click the link to activate your account.",
       email: newUser.email,
-      user: formatUser(newUser)
+      user: formatUser(newUser),
+      verificationLink: process.env.NODE_ENV !== 'production' ? verificationLink : undefined
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -397,24 +382,36 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ success: false, error: "Invalid email or password!" });
     }
 
-    // Login ke liye 6-digit OTP Code bhein (15 mins expiry)
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-    user.verificationOtp = otpCode;
-    user.verificationOtpExpires = new Date(Date.now() + 15 * 60 * 1000);
-    user.verificationToken = otpCode;
-    user.verificationTokenExpires = user.verificationOtpExpires;
-    await user.save();
+    // Check karein kya user verified hai
+    if (!user.isVerified) {
+      const verificationToken = crypto.randomBytes(32).toString('hex');
+      user.verificationToken = verificationToken;
+      user.verificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      await user.save();
 
-    const emailPromise = sendOtpEmail(user.email, `${user.firstName || ''} ${user.lastName || ''}`.trim(), otpCode, 'login');
-    await Promise.race([emailPromise, new Promise((res) => setTimeout(res, 1500))]);
+      const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
+      await sendVerificationEmail(user.email, `${user.firstName || ''} ${user.lastName || ''}`.trim(), verificationLink, 'login');
+
+      return res.status(200).json({
+        success: true,
+        requiresVerification: true,
+        verificationRequired: true,
+        verificationType: 'link',
+        message: "Your email address is not verified yet. A verification link has been sent to your email. Please check your inbox and click the link to sign in.",
+        email: user.email,
+        verificationLink: process.env.NODE_ENV !== 'production' ? verificationLink : undefined
+      });
+    }
+
+    // Verified user: direct login with JWT token & cookie!
+    const token = generateToken(user);
+    res.cookie('token', token, getCookieOptions());
 
     return res.status(200).json({
       success: true,
-      requiresVerification: true,
-      verificationRequired: true,
-      verificationType: 'otp',
-      message: "A 6-digit sign-in code has been sent to your email. Please check your inbox.",
-      email: user.email
+      message: "Login successful! Welcome back.",
+      token,
+      user: formatUser(user)
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -486,32 +483,25 @@ router.post(['/resend-otp', '/resend-verification'], async (req, res) => {
       return res.status(404).json({ success: false, error: "No account found with this email address." });
     }
 
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const otpExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 mins expiry
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours expiry
 
-    user.verificationOtp = otpCode;
-    user.verificationOtpExpires = otpExpires;
-    user.verificationToken = otpCode;
-    user.verificationTokenExpires = otpExpires;
+    user.verificationToken = verificationToken;
+    user.verificationTokenExpires = verificationExpires;
     await user.save();
 
-    const emailResult = await sendOtpEmail(
+    const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
+    await sendVerificationEmail(
       user.email,
       `${user.firstName || ''} ${user.lastName || ''}`.trim(),
-      otpCode,
+      verificationLink,
       user.isVerified ? 'login' : 'signup'
     );
-    if (!emailResult.success) {
-      console.error('❌ Failed to send resend-otp email:', emailResult.error);
-      return res.status(500).json({
-        success: false,
-        error: `Failed to send verification email: ${emailResult.error}. Please ensure EMAIL_USER and EMAIL_PASS are set in Railway Variables.`
-      });
-    }
 
     res.status(200).json({
       success: true,
-      message: "A new 6-digit verification code has been sent to your email. Please check your inbox."
+      message: "A new verification link has been sent to your email. Please check your inbox and spam folder.",
+      verificationLink: process.env.NODE_ENV !== 'production' ? verificationLink : undefined
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
