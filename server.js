@@ -150,7 +150,7 @@ app.use((err, req, res, next) => {
 });
 
 // 6. MongoDB Connection (Supports MONGO_URI, MONGO_URL from Railway MongoDB plugin, or Atlas)
-const mongoUri = process.env.MONGO_URI || process.env.MONGO_URL || process.env.MONGODB_URL;
+const mongoUri = process.env.MONGO_URI || process.env.MONGO_URL || process.env.MONGODB_URL || process.env.ATLAS_URI;
 if (!mongoUri) {
   console.error('WARNING: Neither MONGO_URI nor MONGO_URL found in environment variables!');
 } else {
