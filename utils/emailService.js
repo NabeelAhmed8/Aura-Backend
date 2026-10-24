@@ -280,7 +280,57 @@ const sendVerificationEmail = async (toEmail, userName, verificationLink, type =
   }
 };
 
+/**
+ * Diagnostic tool to verify live email credentials & dispatch test email
+ */
+const testEmailConfig = async (toEmail) => {
+  const emailUser = process.env.EMAIL_USER;
+  const emailPass = process.env.EMAIL_PASS;
+
+  if (!emailUser || !emailPass) {
+    return {
+      configured: false,
+      error: 'EMAIL_USER or EMAIL_PASS environment variable is missing on server',
+      hasEmailUser: !!emailUser,
+      hasEmailPass: !!emailPass
+    };
+  }
+
+  const transporter = createTransporter();
+  try {
+    await transporter.verify();
+
+    let sendResult = null;
+    if (toEmail) {
+      const fromAddress = emailUser.trim();
+      const info = await transporter.sendMail({
+        from: `"AURA Luxury" <${fromAddress}>`,
+        to: toEmail.trim(),
+        subject: 'AURA Verification Test Email',
+        text: 'This is a test email from AURA Clothing Brand to verify live email delivery.',
+      });
+      sendResult = { messageId: info.messageId, to: toEmail };
+    }
+
+    return {
+      configured: true,
+      verified: true,
+      emailUser: `${emailUser.slice(0, 3)}***@${emailUser.split('@')[1] || ''}`,
+      sendResult
+    };
+  } catch (err) {
+    return {
+      configured: true,
+      verified: false,
+      error: err.message,
+      code: err.code
+    };
+  }
+};
+
 module.exports = {
   sendOtpEmail,
   sendVerificationEmail,
+  testEmailConfig,
+  createTransporter,
 };

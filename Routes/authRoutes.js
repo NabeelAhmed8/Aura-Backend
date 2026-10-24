@@ -4,7 +4,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const User = require('../models/Users');
-const { sendVerificationEmail, sendOtpEmail } = require('../utils/emailService');
+const { sendVerificationEmail, sendOtpEmail, testEmailConfig } = require('../utils/emailService');
 
 // Configuration
 const JWT_SECRET = process.env.JWT_SECRET || 'aura_super_secure_jwt_secret_key_2026';
@@ -228,6 +228,17 @@ router.get('/verify-email', async (req, res) => {
   }
 });
 
+// 2F. Diagnostic Route: Check live email credentials & connectivity
+router.get('/email-status', async (req, res) => {
+  try {
+    const { to } = req.query;
+    const result = await testEmailConfig(to);
+    return res.status(result.configured && result.verified ? 200 : 400).json(result);
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ==========================================
 // 3. POST ROUTES
 // ==========================================
@@ -280,8 +291,14 @@ router.post('/signup', async (req, res) => {
         existingUser.verificationTokenExpires = otpExpires;
         await existingUser.save();
 
-        const emailPromise = sendOtpEmail(existingUser.email, `${existingUser.firstName || fName} ${existingUser.lastName || lName}`.trim(), otpCode, 'signup');
-        await Promise.race([emailPromise, new Promise((res) => setTimeout(res, 1500))]);
+        const emailResult = await sendOtpEmail(existingUser.email, `${existingUser.firstName || fName} ${existingUser.lastName || lName}`.trim(), otpCode, 'signup');
+        if (!emailResult.success) {
+          console.error('❌ Failed to send re-signup OTP email:', emailResult.error);
+          return res.status(500).json({
+            success: false,
+            error: `Failed to send verification email: ${emailResult.error}. Please ensure EMAIL_USER and EMAIL_PASS are set in Railway Variables.`
+          });
+        }
 
         return res.status(200).json({
           success: true,
@@ -322,8 +339,14 @@ router.post('/signup', async (req, res) => {
     await newUser.save();
 
     // Nodemailer ke zariye 6-digit OTP code bhejein (Fast delivery)
-    const emailPromise = sendOtpEmail(newUser.email, `${fName} ${lName}`.trim(), otpCode, 'signup');
-    await Promise.race([emailPromise, new Promise((res) => setTimeout(res, 1500))]);
+    const emailResult = await sendOtpEmail(newUser.email, `${fName} ${lName}`.trim(), otpCode, 'signup');
+    if (!emailResult.success) {
+      console.error('❌ Failed to send signup OTP email:', emailResult.error);
+      return res.status(500).json({
+        success: false,
+        error: `Failed to send verification email: ${emailResult.error}. Please ensure EMAIL_USER and EMAIL_PASS are set in Railway Variables.`
+      });
+    }
 
     res.status(201).json({
       success: true,
@@ -472,13 +495,19 @@ router.post(['/resend-otp', '/resend-verification'], async (req, res) => {
     user.verificationTokenExpires = otpExpires;
     await user.save();
 
-    const emailPromise = sendOtpEmail(
+    const emailResult = await sendOtpEmail(
       user.email,
       `${user.firstName || ''} ${user.lastName || ''}`.trim(),
       otpCode,
       user.isVerified ? 'login' : 'signup'
     );
-    await Promise.race([emailPromise, new Promise((res) => setTimeout(res, 1500))]);
+    if (!emailResult.success) {
+      console.error('❌ Failed to send resend-otp email:', emailResult.error);
+      return res.status(500).json({
+        success: false,
+        error: `Failed to send verification email: ${emailResult.error}. Please ensure EMAIL_USER and EMAIL_PASS are set in Railway Variables.`
+      });
+    }
 
     res.status(200).json({
       success: true,
