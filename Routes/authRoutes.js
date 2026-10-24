@@ -280,18 +280,17 @@ router.post('/signup', async (req, res) => {
         existingUser.verificationTokenExpires = otpExpires;
         await existingUser.save();
 
-        const emailResult = await sendOtpEmail(existingUser.email, `${existingUser.firstName || fName} ${existingUser.lastName || lName}`.trim(), otpCode, 'signup');
-        const isSimulatedOrFailed = emailResult?.simulated || !emailResult?.success;
+        const emailPromise = sendOtpEmail(existingUser.email, `${existingUser.firstName || fName} ${existingUser.lastName || lName}`.trim(), otpCode, 'signup');
+        await Promise.race([emailPromise, new Promise((res) => setTimeout(res, 1500))]);
 
         return res.status(200).json({
           success: true,
           requiresVerification: true,
           verificationRequired: true,
           verificationType: 'otp',
-          message: "Verification code sent to your email. Please enter it to complete registration.",
+          message: "Verification code sent to your email. Please check your inbox.",
           email: existingUser.email,
-          user: formatUser(existingUser),
-          ...(isSimulatedOrFailed ? { debugOtp: otpCode } : {})
+          user: formatUser(existingUser)
         });
       }
 
@@ -322,9 +321,9 @@ router.post('/signup', async (req, res) => {
     });
     await newUser.save();
 
-    // Nodemailer ke zariye 6-digit OTP code bhejein
-    const emailResult = await sendOtpEmail(newUser.email, `${fName} ${lName}`.trim(), otpCode, 'signup');
-    const isSimulatedOrFailed = emailResult?.simulated || !emailResult?.success;
+    // Nodemailer ke zariye 6-digit OTP code bhejein (Fast delivery)
+    const emailPromise = sendOtpEmail(newUser.email, `${fName} ${lName}`.trim(), otpCode, 'signup');
+    await Promise.race([emailPromise, new Promise((res) => setTimeout(res, 1500))]);
 
     res.status(201).json({
       success: true,
@@ -333,8 +332,7 @@ router.post('/signup', async (req, res) => {
       verificationType: 'otp',
       message: "Account created successfully! A 6-digit verification code has been sent to your email.",
       email: newUser.email,
-      user: formatUser(newUser),
-      ...(isSimulatedOrFailed ? { debugOtp: otpCode } : {})
+      user: formatUser(newUser)
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -384,17 +382,16 @@ router.post('/login', async (req, res) => {
     user.verificationTokenExpires = user.verificationOtpExpires;
     await user.save();
 
-    const emailResult = await sendOtpEmail(user.email, `${user.firstName || ''} ${user.lastName || ''}`.trim(), otpCode, 'login');
-    const isSimulatedOrFailed = emailResult?.simulated || !emailResult?.success;
+    const emailPromise = sendOtpEmail(user.email, `${user.firstName || ''} ${user.lastName || ''}`.trim(), otpCode, 'login');
+    await Promise.race([emailPromise, new Promise((res) => setTimeout(res, 1500))]);
 
     return res.status(200).json({
       success: true,
       requiresVerification: true,
       verificationRequired: true,
       verificationType: 'otp',
-      message: "A 6-digit sign-in code has been sent to your email. Please enter it below to continue.",
-      email: user.email,
-      ...(isSimulatedOrFailed ? { debugOtp: otpCode } : {})
+      message: "A 6-digit sign-in code has been sent to your email. Please check your inbox.",
+      email: user.email
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -475,18 +472,17 @@ router.post(['/resend-otp', '/resend-verification'], async (req, res) => {
     user.verificationTokenExpires = otpExpires;
     await user.save();
 
-    const emailResult = await sendOtpEmail(
+    const emailPromise = sendOtpEmail(
       user.email,
       `${user.firstName || ''} ${user.lastName || ''}`.trim(),
       otpCode,
       user.isVerified ? 'login' : 'signup'
     );
-    const isSimulatedOrFailed = emailResult?.simulated || !emailResult?.success;
+    await Promise.race([emailPromise, new Promise((res) => setTimeout(res, 1500))]);
 
     res.status(200).json({
       success: true,
-      message: "A new 6-digit verification code has been sent to your email. Please check your inbox.",
-      ...(isSimulatedOrFailed ? { debugOtp: otpCode } : {})
+      message: "A new 6-digit verification code has been sent to your email. Please check your inbox."
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

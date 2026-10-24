@@ -1,6 +1,14 @@
+const dns = require('dns');
+if (dns.setDefaultResultOrder) {
+  // Prevent 5-10s IPv6 connection timeouts on cloud containers (Railway, Docker)
+  dns.setDefaultResultOrder('ipv4first');
+}
+
 const nodemailer = require('nodemailer');
 
-// Helper to create transport
+let cachedTransporter = null;
+
+// Helper to create & pool transport
 const createTransporter = () => {
   const emailUser = process.env.EMAIL_USER;
   let emailPass = process.env.EMAIL_PASS;
@@ -9,23 +17,39 @@ const createTransporter = () => {
     return null;
   }
 
-  // Google App Passwords often contain spaces when generated (e.g. 'fckq aehq jlho ervb')
+  if (cachedTransporter) {
+    return cachedTransporter;
+  }
+
+  // Strip spaces from Google App Password
   emailPass = String(emailPass).replace(/\s+/g, '');
 
-  return nodemailer.createTransport({
-    service: process.env.EMAIL_SERVICE || 'gmail',
+  cachedTransporter = nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
     auth: {
       user: emailUser.trim(),
       pass: emailPass,
     },
+    pool: true,
+    maxConnections: 3,
+    maxMessages: 100,
+    rateLimit: 5,
+    rateDelta: 1000,
+    connectionTimeout: 8000,
+    greetingTimeout: 4000,
+    socketTimeout: 10000,
     tls: {
       rejectUnauthorized: false
     }
   });
+
+  return cachedTransporter;
 };
 
 /**
- * Send an OTP verification code to the user via email
+ * Send a 100% real OTP verification code to the user via email
  * @param {string} toEmail 
  * @param {string} userName 
  * @param {string} otpCode 
@@ -153,7 +177,7 @@ const sendOtpEmail = async (toEmail, userName, otpCode, type = 'signup') => {
           <h2>${heading}</h2>
           <p>Hello <strong>${recipientName}</strong>,</p>
           <p>${bodyText}</p>
-          
+
           <div class="otp-box">
             <div class="otp-code">${otpCode}</div>
           </div>
@@ -170,19 +194,11 @@ const sendOtpEmail = async (toEmail, userName, otpCode, type = 'signup') => {
     </html>
   `;
 
-  console.log('\n============================================================');
-  console.log(`🔐 [OTP CODE DISPATCHED (${isLogin ? 'LOGIN' : 'SIGNUP'})]`);
-  console.log(`To: ${toEmail}`);
-  console.log(`OTP Code: ${otpCode}`);
   if (!transporter) {
-    console.log('⚠️ Notice: EMAIL_USER / EMAIL_PASS not set in .env. OTP logged to console.');
-  }
-  console.log('============================================================\n');
-
-  if (!transporter) {
+    console.error('❌ [EMAIL NOT SENT]: EMAIL_USER or EMAIL_PASS missing in environment variables!');
     return {
-      success: true,
-      simulated: true,
+      success: false,
+      error: 'Email configuration missing on server',
       otpCode
     };
   }
@@ -197,14 +213,14 @@ const sendOtpEmail = async (toEmail, userName, otpCode, type = 'signup') => {
       html: htmlContent,
     });
 
-    console.log(`✅ Nodemailer: OTP Email successfully sent to ${toEmail} (ID: ${info.messageId})`);
+    console.log(`✅ [Nodemailer] OTP Email delivered to ${toEmail} (ID: ${info.messageId})`);
     return {
       success: true,
       messageId: info.messageId,
       otpCode
     };
   } catch (err) {
-    console.error('❌ Nodemailer Error sending OTP email to', toEmail, ':', err.message);
+    console.error('❌ [Nodemailer] Error sending OTP email to', toEmail, ':', err.message);
     return {
       success: false,
       error: err.message,
@@ -246,11 +262,12 @@ const sendVerificationEmail = async (toEmail, userName, verificationLink, type =
     </html>
   `;
 
-  if (!transporter) return { success: true, simulated: true, verificationLink };
+  if (!transporter) return { success: false, error: 'Email configuration missing', verificationLink };
 
   try {
+    const fromAddress = (process.env.EMAIL_USER || 'no-reply@auraclothing.com').trim();
     const info = await transporter.sendMail({
-      from: `"AURA Luxury" <${process.env.EMAIL_USER}>`,
+      from: `"AURA Luxury" <${fromAddress}>`,
       to: toEmail,
       subject: emailSubject,
       text: `${bodyText}\n\nLink: ${verificationLink}`,
