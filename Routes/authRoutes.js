@@ -4,20 +4,29 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const User = require('../models/Users');
-const { sendVerificationEmail, sendOtpEmail, testEmailConfig } = require('../utils/emailService');
+const {
+  sendSignupVerificationEmail,
+  sendLoginOtpEmail,
+  testEmailConfig
+} = require('../utils/emailService');
 
 // Configuration
 const JWT_SECRET = process.env.JWT_SECRET || 'aura_super_secure_jwt_secret_key_2026';
-const SALT_ROUNDS = 10; // Bcrypt salt rounds (quantity: 10)
+const SALT_ROUNDS = 10;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5001';
 
-// Helper: Password length check (kam az kam 6 characters)
+// Helper: Password length validation (minimum 6 characters)
 const validatePasswordLength = (password) => {
   return password && typeof password === 'string' && password.trim().length >= 6;
 };
 
-// Helper: 1 Din (1 day) ke liye JWT Token generate karein
+// Helper: 6-Digit random OTP generator
+const generateOtp = () => {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
+// Helper: 1 Day JWT Token generation
 const generateToken = (user) => {
   return jwt.sign(
     {
@@ -25,16 +34,16 @@ const generateToken = (user) => {
       email: user.email,
     },
     JWT_SECRET,
-    { expiresIn: '1d' } // 1 day expiry
+    { expiresIn: '1d' }
   );
 };
 
-// Helper: Cookie options (1 din ke liye valid, secure & httpOnly)
+// Helper: Cookie options
 const getCookieOptions = () => ({
-  httpOnly: true, // XSS attack protection (Frontend JavaScript isay read nahi kar sakti)
+  httpOnly: true,
   secure: (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true' || Boolean(process.env.RAILWAY_ENVIRONMENT) || Boolean(process.env.RAILWAY_STATIC_URL)),
   sameSite: (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true' || Boolean(process.env.RAILWAY_ENVIRONMENT) || Boolean(process.env.RAILWAY_STATIC_URL)) ? 'none' : 'lax',
-  maxAge: 24 * 60 * 60 * 1000 // 1 din (24 hours in milliseconds)
+  maxAge: 24 * 60 * 60 * 1000 // 1 day
 });
 
 // Helper: Cookie clear options
@@ -44,7 +53,7 @@ const getClearCookieOptions = () => ({
   sameSite: (process.env.NODE_ENV === 'production' || process.env.RENDER === 'true' || Boolean(process.env.RAILWAY_ENVIRONMENT) || Boolean(process.env.RAILWAY_STATIC_URL)) ? 'none' : 'lax'
 });
 
-// Helper to format sanitized user object (passwords chupa kar safe data return karne ke liye)
+// Helper to format sanitized user object
 const formatUser = (user) => {
   let dobStr = '';
   if (user.dateOfBirth) {
@@ -79,7 +88,7 @@ const formatUser = (user) => {
 };
 
 // ==========================================
-// 1. OPTIONS ROUTE (Allowed HTTP Methods check karne ke liye)
+// 1. OPTIONS ROUTE
 // ==========================================
 router.options('/', (req, res) => {
   res.setHeader('Allow', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
@@ -93,7 +102,8 @@ router.options('/', (req, res) => {
 // ==========================================
 // 2. GET ROUTES
 // ==========================================
-// 2A. Saare users aur total count fetch karein
+
+// 2A. Get all users and count
 router.get(['/', '/all-users'], async (req, res) => {
   try {
     const totalUsers = await User.countDocuments();
@@ -109,7 +119,7 @@ router.get(['/', '/all-users'], async (req, res) => {
   }
 });
 
-// 2B. Single user fetch karein email se (/user-profile?email=...)
+// 2B. Single user profile by email
 router.get('/user-profile', async (req, res) => {
   try {
     const { email } = req.query;
@@ -131,7 +141,7 @@ router.get('/user-profile', async (req, res) => {
   }
 });
 
-// 2C. Verify JWT Token & Get Current User (/verify-token)
+// 2C. Verify JWT Token & Get Current User
 router.get('/verify-token', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -165,7 +175,7 @@ router.get('/verify-token', async (req, res) => {
   }
 });
 
-// 2D. Check Email Registration Status (/check-email?email=...)
+// 2D. Check Email Registration Status
 router.get('/check-email', async (req, res) => {
   try {
     const { email } = req.query;
@@ -180,6 +190,7 @@ router.get('/check-email', async (req, res) => {
       success: true,
       isRegistered: !!user,
       exists: !!user,
+      isVerified: !!user?.isVerified,
       email: normalizedEmail,
       firstName: user?.firstName || '',
     });
@@ -189,7 +200,7 @@ router.get('/check-email', async (req, res) => {
   }
 });
 
-// 2E. Verify Email by Token (Email Verification Link Click Handler)
+// 2E. Verify Email by Token (Resend Clickable Link Handler)
 router.get('/verify-email', async (req, res) => {
   try {
     const { token } = req.query;
@@ -207,28 +218,24 @@ router.get('/verify-email', async (req, res) => {
       return res.redirect(`${FRONTEND_URL}/#/verify-email?status=failed&message=Verification+link+is+invalid+or+has+expired`);
     }
 
-    // Mark as verified & clear verification token
+    // Mark as verified & clear verification tokens
     user.isVerified = true;
-    user.verificationToken = undefined;
-    user.verificationTokenExpires = undefined;
+    user.verificationToken = null;
+    user.verificationTokenExpires = null;
+    user.verificationOtp = null;
+    user.verificationOtpExpires = null;
     await user.save();
 
-    // 1 Day Expiry JWT Token Generate Karein
-    const jwtToken = generateToken(user);
-
-    // Cookie mein token store karein (1 day expiry)
-    res.cookie('token', jwtToken, getCookieOptions());
-
-    // Redirect to frontend with success status & token
-    const redirectUrl = `${FRONTEND_URL}/#/verify-email?status=success&token=${encodeURIComponent(jwtToken)}&email=${encodeURIComponent(user.email)}`;
+    // Redirect to login page with verified=true parameter
+    const redirectUrl = `${FRONTEND_URL}/#/login?verified=true&email=${encodeURIComponent(user.email)}`;
     return res.redirect(redirectUrl);
   } catch (err) {
-    console.error('Verify email route error:', err);
+    console.error('Verify email link route error:', err);
     return res.redirect(`${FRONTEND_URL}/#/verify-email?status=failed&message=${encodeURIComponent(err.message)}`);
   }
 });
 
-// 2F. Diagnostic Route: Check live email credentials & connectivity
+// 2F. Diagnostic Route: Check Resend API key & connectivity
 router.get('/email-status', async (req, res) => {
   try {
     const { to } = req.query;
@@ -242,7 +249,8 @@ router.get('/email-status', async (req, res) => {
 // ==========================================
 // 3. POST ROUTES
 // ==========================================
-// 3A. SIGNUP ROUTE (Naya account register karein - Bcrypt Hash + Nodemailer Verification Email)
+
+// 3A. SIGNUP ROUTE (Register new user with Resend email verification code & link)
 router.post('/signup', async (req, res) => {
   try {
     const { email, password, firstName, lastName, name, phone, dateOfBirth, gender } = req.body;
@@ -251,11 +259,10 @@ router.post('/signup', async (req, res) => {
       return res.status(400).json({ success: false, error: "Email and password are required!" });
     }
 
-    // Password quantity / length check (kam az kam 10 characters)
     if (!validatePasswordLength(password)) {
       return res.status(400).json({
         success: false,
-        error: "Password must be at least 10 characters long! (Password kam az kam 10 characters ka hona chahiye)"
+        error: "Password must be at least 6 characters long!"
       });
     }
 
@@ -272,48 +279,61 @@ router.post('/signup', async (req, res) => {
     }
 
     const existingUser = await User.findOne({ email: normalizedEmail });
+
+    // Generate 6-Digit OTP & 32-Byte Verification Token
+    const verificationOtp = generateOtp();
+    const verificationOtpExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 mins
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const verificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+    const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
+
     if (existingUser) {
-      // Agar pehle se account bana tha magar abhi verify nahi hua:
-      if (!existingUser.isVerified) {
-        const salt = await bcrypt.genSalt(SALT_ROUNDS);
-        existingUser.password = await bcrypt.hash(password, salt);
-        if (fName) existingUser.firstName = fName;
-        if (lName) existingUser.lastName = lName;
-        if (phone) existingUser.phone = phone.trim();
-        if (parsedDob) existingUser.dateOfBirth = parsedDob;
-        if (gender) existingUser.gender = gender;
-
-        const verificationToken = crypto.randomBytes(32).toString('hex');
-        const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
-        existingUser.verificationToken = verificationToken;
-        existingUser.verificationTokenExpires = verificationExpires;
-        await existingUser.save();
-
-        const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
-        await sendVerificationEmail(existingUser.email, `${existingUser.firstName || fName} ${existingUser.lastName || lName}`.trim(), verificationLink, 'signup');
-
-        return res.status(200).json({
-          success: true,
-          requiresVerification: true,
-          verificationRequired: true,
-          verificationType: 'link',
-          message: "A verification link has been sent to your email. Please check your inbox and click the link to activate your account.",
-          email: existingUser.email,
-          user: formatUser(existingUser),
-          verificationLink: process.env.NODE_ENV !== 'production' ? verificationLink : undefined
+      // If already verified, ask to sign in
+      if (existingUser.isVerified) {
+        return res.status(400).json({
+          success: false,
+          error: "An account already exists with this email. Please sign in instead."
         });
       }
 
-      return res.status(400).json({ success: false, error: "An account already exists with this email. Please sign in instead." });
+      // If user exists but is not verified yet, update password/details and re-send code
+      const salt = await bcrypt.genSalt(SALT_ROUNDS);
+      existingUser.password = await bcrypt.hash(password, salt);
+      if (fName) existingUser.firstName = fName;
+      if (lName) existingUser.lastName = lName;
+      if (phone) existingUser.phone = phone.trim();
+      if (parsedDob) existingUser.dateOfBirth = parsedDob;
+      if (gender) existingUser.gender = gender;
+
+      existingUser.verificationOtp = verificationOtp;
+      existingUser.verificationOtpExpires = verificationOtpExpires;
+      existingUser.verificationToken = verificationToken;
+      existingUser.verificationTokenExpires = verificationTokenExpires;
+      await existingUser.save();
+
+      // Dispatch verification email via Resend
+      await sendSignupVerificationEmail(
+        existingUser.email,
+        `${existingUser.firstName || fName} ${existingUser.lastName || lName}`.trim(),
+        verificationOtp,
+        verificationLink
+      );
+
+      return res.status(200).json({
+        success: true,
+        requiresVerification: true,
+        verificationRequired: true,
+        verificationType: 'otp_and_link',
+        message: "Account already registered but not yet verified. A fresh verification code and link have been sent to your email via Resend.",
+        email: existingUser.email,
+        user: formatUser(existingUser),
+        devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true') ? verificationOtp : undefined
+      });
     }
 
-    // Bcrypt Password Hashing (Salt Rounds: 10)
+    // New User registration
     const salt = await bcrypt.genSalt(SALT_ROUNDS);
     const hashedPassword = await bcrypt.hash(password, salt);
-
-    // 24 Hours ke liye Verification Token generate karein
-    const verificationToken = crypto.randomBytes(32).toString('hex');
-    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
     const newUser = new User({
       email: normalizedEmail,
@@ -324,30 +344,38 @@ router.post('/signup', async (req, res) => {
       dateOfBirth: parsedDob,
       gender: gender || '',
       isVerified: false,
-      verificationToken: verificationToken,
-      verificationTokenExpires: verificationExpires,
+      verificationOtp,
+      verificationOtpExpires,
+      verificationToken,
+      verificationTokenExpires,
     });
     await newUser.save();
 
-    const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
-    await sendVerificationEmail(newUser.email, `${fName} ${lName}`.trim(), verificationLink, 'signup');
+    // Dispatch verification email via Resend
+    await sendSignupVerificationEmail(
+      newUser.email,
+      `${fName} ${lName}`.trim(),
+      verificationOtp,
+      verificationLink
+    );
 
     res.status(201).json({
       success: true,
       requiresVerification: true,
       verificationRequired: true,
-      verificationType: 'link',
-      message: "Account created successfully! A verification link has been sent to your email. Please check your inbox and click the link to activate your account.",
+      verificationType: 'otp_and_link',
+      message: "Account created successfully! A 6-digit verification code and link have been sent to your email via Resend. Please verify your email before logging in.",
       email: newUser.email,
       user: formatUser(newUser),
-      verificationLink: process.env.NODE_ENV !== 'production' ? verificationLink : undefined
+      devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true') ? verificationOtp : undefined
     });
   } catch (err) {
+    console.error('Signup error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 3B. LOGIN ROUTE (Bcrypt Compare + Email Verification Check + Cookie Set)
+// 3B. LOGIN ROUTE (Validate credentials, check isVerified, send 6-digit Login OTP via Resend)
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -363,15 +391,11 @@ router.post('/login', async (req, res) => {
     }
 
     let isMatch = false;
-
-    // Check karein kya database mein password bcrypt hash hai ($2a$, $2b$, $2y$)
     if (user.password && user.password.startsWith('$2')) {
       isMatch = await bcrypt.compare(password, user.password);
     } else {
-      // Agar pehle se database mein plain text password tha:
       isMatch = (user.password === password);
       if (isMatch) {
-        // Auto-hash and save so password gets secured right now:
         const salt = await bcrypt.genSalt(SALT_ROUNDS);
         user.password = await bcrypt.hash(password, salt);
         await user.save();
@@ -382,28 +406,97 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ success: false, error: "Invalid email or password!" });
     }
 
-    // Check karein kya user verified hai
+    // Step 1: Ensure user is verified. Unverified users cannot login!
     if (!user.isVerified) {
+      const verificationOtp = generateOtp();
+      const verificationOtpExpires = new Date(Date.now() + 15 * 60 * 1000);
       const verificationToken = crypto.randomBytes(32).toString('hex');
+      const verificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
+
+      user.verificationOtp = verificationOtp;
+      user.verificationOtpExpires = verificationOtpExpires;
       user.verificationToken = verificationToken;
-      user.verificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      user.verificationTokenExpires = verificationTokenExpires;
       await user.save();
 
-      const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
-      await sendVerificationEmail(user.email, `${user.firstName || ''} ${user.lastName || ''}`.trim(), verificationLink, 'login');
+      await sendSignupVerificationEmail(
+        user.email,
+        `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+        verificationOtp,
+        verificationLink
+      );
 
-      return res.status(200).json({
-        success: true,
+      return res.status(403).json({
+        success: false,
         requiresVerification: true,
         verificationRequired: true,
-        verificationType: 'link',
-        message: "Your email address is not verified yet. A verification link has been sent to your email. Please check your inbox and click the link to sign in.",
+        message: "Your email address is not verified yet. We have sent a verification code to your email via Resend. Please verify your email before logging in.",
         email: user.email,
-        verificationLink: process.env.NODE_ENV !== 'production' ? verificationLink : undefined
+        devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true') ? verificationOtp : undefined
       });
     }
 
-    // Verified user: direct login with JWT token & cookie!
+    // Step 2: User is verified. Generate 6-digit Login OTP and send via Resend!
+    const loginOtp = generateOtp();
+    const loginOtpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes expiry
+
+    user.loginOtp = loginOtp;
+    user.loginOtpExpires = loginOtpExpires;
+    await user.save();
+
+    // Dispatch Login 2FA OTP via Resend
+    await sendLoginOtpEmail(
+      user.email,
+      `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+      loginOtp
+    );
+
+    return res.status(200).json({
+      success: true,
+      requiresLoginOtp: true,
+      requiresOtp: true,
+      email: user.email,
+      message: "A 6-digit sign-in code has been sent to your email via Resend. Please enter the code to complete your login.",
+      devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true') ? loginOtp : undefined
+    });
+  } catch (err) {
+    console.error('Login error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 3C. VERIFY LOGIN OTP ROUTE (Completes login after user enters 6-digit code received via Resend)
+router.post('/verify-login-otp', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ success: false, error: "Email and 6-digit code are required." });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const cleanOtp = String(otp).trim();
+
+    const user = await User.findOne({ email: normalizedEmail });
+    if (!user) {
+      return res.status(404).json({ success: false, error: "No account found with this email." });
+    }
+
+    if (!user.loginOtp || user.loginOtp !== cleanOtp) {
+      return res.status(400).json({ success: false, error: "Invalid sign-in code. Please check your email and try again." });
+    }
+
+    if (!user.loginOtpExpires || new Date(user.loginOtpExpires).getTime() < Date.now()) {
+      return res.status(400).json({ success: false, error: "This sign-in code has expired. Please request a new code." });
+    }
+
+    // Code is valid! Clear login OTP
+    user.loginOtp = null;
+    user.loginOtpExpires = null;
+    await user.save();
+
+    // Generate JWT Token & Set Cookie
     const token = generateToken(user);
     res.cookie('token', token, getCookieOptions());
 
@@ -414,16 +507,18 @@ router.post('/login', async (req, res) => {
       user: formatUser(user)
     });
   } catch (err) {
+    console.error('Verify login OTP error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 3C. VERIFY OTP CODE ROUTE (6-Digit OTP verification & session login)
+// 3D. UNIVERSAL VERIFY OTP ROUTE (Handles both Login OTP and Signup Email Verification OTP)
 router.post('/verify-otp', async (req, res) => {
   try {
-    const { email, otp } = req.body;
+    const { email, otp, type } = req.body;
+
     if (!email || !otp) {
-      return res.status(400).json({ success: false, error: "Email and 6-digit verification code are required." });
+      return res.status(400).json({ success: false, error: "Email and 6-digit code are required." });
     }
 
     const normalizedEmail = email.toLowerCase().trim();
@@ -434,33 +529,59 @@ router.post('/verify-otp', async (req, res) => {
       return res.status(404).json({ success: false, error: "No account found with this email address." });
     }
 
-    const storedOtp = user.verificationOtp || user.verificationToken;
-    if (!storedOtp || storedOtp !== cleanOtp) {
-      return res.status(400).json({ success: false, error: "Invalid verification code. Please check your email and try again." });
+    const isLoginOtpMatch = user.loginOtp && user.loginOtp === cleanOtp;
+    const isLoginOtpActive = isLoginOtpMatch && user.loginOtpExpires && new Date(user.loginOtpExpires).getTime() >= Date.now();
+
+    const isVerificationOtpMatch = (user.verificationOtp && user.verificationOtp === cleanOtp) || (user.verificationToken && user.verificationToken === cleanOtp);
+    const isVerificationOtpActive = isVerificationOtpMatch && user.verificationOtpExpires && new Date(user.verificationOtpExpires).getTime() >= Date.now();
+
+    // 1. If Login OTP was provided and is valid
+    if (isLoginOtpActive && type !== 'signup') {
+      user.loginOtp = null;
+      user.loginOtpExpires = null;
+      await user.save();
+
+      const jwtToken = generateToken(user);
+      res.cookie('token', jwtToken, getCookieOptions());
+
+      return res.status(200).json({
+        success: true,
+        type: 'login',
+        message: "Login successful! Welcome back to AURA.",
+        token: jwtToken,
+        user: formatUser(user)
+      });
     }
 
-    const expiryTime = user.verificationOtpExpires || user.verificationTokenExpires;
-    if (expiryTime && new Date(expiryTime).getTime() < Date.now()) {
+    // 2. If Signup Email Verification OTP was provided and is valid
+    if (isVerificationOtpActive) {
+      user.isVerified = true;
+      user.verificationOtp = null;
+      user.verificationOtpExpires = null;
+      user.verificationToken = null;
+      user.verificationTokenExpires = null;
+      await user.save();
+
+      return res.status(200).json({
+        success: true,
+        type: 'signup_verified',
+        isVerified: true,
+        message: "Account verified successfully! You can now log in with your password.",
+        user: formatUser(user)
+      });
+    }
+
+    // Check for expiration
+    if (isLoginOtpMatch && !isLoginOtpActive) {
+      return res.status(400).json({ success: false, error: "This sign-in code has expired. Please request a new one." });
+    }
+    if (isVerificationOtpMatch && !isVerificationOtpActive) {
       return res.status(400).json({ success: false, error: "This verification code has expired. Please request a new one." });
     }
 
-    // Mark as verified & clear OTP
-    user.isVerified = true;
-    user.verificationOtp = null;
-    user.verificationOtpExpires = null;
-    user.verificationToken = null;
-    user.verificationTokenExpires = null;
-    await user.save();
-
-    // 1 Day Expiry JWT Token Generate Karein
-    const jwtToken = generateToken(user);
-    res.cookie('token', jwtToken, getCookieOptions());
-
-    return res.status(200).json({
-      success: true,
-      message: "Account verified successfully! Welcome to AURA.",
-      token: jwtToken,
-      user: formatUser(user)
+    return res.status(400).json({
+      success: false,
+      error: "Invalid code. Please check your email and enter the latest 6-digit code sent via Resend."
     });
   } catch (err) {
     console.error("Verify OTP error:", err);
@@ -468,10 +589,11 @@ router.post('/verify-otp', async (req, res) => {
   }
 });
 
-// 3D. RESEND OTP / VERIFICATION CODE ROUTE
+// 3E. RESEND OTP / VERIFICATION CODE ROUTE (Supports both Login 2FA OTP and Signup Verification via Resend)
 router.post(['/resend-otp', '/resend-verification'], async (req, res) => {
   try {
-    const { email } = req.body;
+    const { email, type } = req.body;
+
     if (!email) {
       return res.status(400).json({ success: false, error: "Email is required!" });
     }
@@ -483,32 +605,60 @@ router.post(['/resend-otp', '/resend-verification'], async (req, res) => {
       return res.status(404).json({ success: false, error: "No account found with this email address." });
     }
 
-    const verificationToken = crypto.randomBytes(32).toString('hex');
-    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours expiry
+    // If type is explicitly 'login' or user is already verified and didn't ask for signup
+    if (type === 'login' || (user.isVerified && type !== 'signup')) {
+      const loginOtp = generateOtp();
+      user.loginOtp = loginOtp;
+      user.loginOtpExpires = new Date(Date.now() + 10 * 60 * 1000);
+      await user.save();
 
+      await sendLoginOtpEmail(
+        user.email,
+        `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+        loginOtp
+      );
+
+      return res.status(200).json({
+        success: true,
+        type: 'login',
+        message: "A fresh 6-digit sign-in code has been sent to your email via Resend.",
+        devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true') ? loginOtp : undefined
+      });
+    }
+
+    // Otherwise, resend signup verification OTP & Link
+    const verificationOtp = generateOtp();
+    const verificationOtpExpires = new Date(Date.now() + 15 * 60 * 1000);
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const verificationTokenExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
+
+    user.verificationOtp = verificationOtp;
+    user.verificationOtpExpires = verificationOtpExpires;
     user.verificationToken = verificationToken;
-    user.verificationTokenExpires = verificationExpires;
+    user.verificationTokenExpires = verificationTokenExpires;
     await user.save();
 
-    const verificationLink = `${BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
-    await sendVerificationEmail(
+    await sendSignupVerificationEmail(
       user.email,
       `${user.firstName || ''} ${user.lastName || ''}`.trim(),
-      verificationLink,
-      user.isVerified ? 'login' : 'signup'
+      verificationOtp,
+      verificationLink
     );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      message: "A new verification link has been sent to your email. Please check your inbox and spam folder.",
-      verificationLink: process.env.NODE_ENV !== 'production' ? verificationLink : undefined
+      type: 'signup',
+      message: "A fresh verification code and link have been sent to your email via Resend.",
+      devOtp: (process.env.NODE_ENV !== 'production' || process.env.ALLOW_DEV_OTP === 'true') ? verificationOtp : undefined
     });
   } catch (err) {
+    console.error('Resend OTP error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 3C. CREATE USER (Admin ya Postman se complete user add karein - Bcrypt Hash + Token)
+// 3F. CREATE USER (Admin or direct API user creation)
 router.post(['/', '/create-user'], async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -516,11 +666,10 @@ router.post(['/', '/create-user'], async (req, res) => {
       return res.status(400).json({ success: false, error: "Email and password are required!" });
     }
 
-    // Password quantity / length check (kam az kam 10 characters)
     if (!validatePasswordLength(password)) {
       return res.status(400).json({
         success: false,
-        error: "Password must be at least 10 characters long! (Password kam az kam 10 characters ka hona chahiye)"
+        error: "Password must be at least 6 characters long!"
       });
     }
 
@@ -530,20 +679,18 @@ router.post(['/', '/create-user'], async (req, res) => {
       return res.status(400).json({ success: false, error: "User already exists with this email!" });
     }
 
-    // Bcrypt Hash (Salt Rounds: 10)
     const salt = await bcrypt.genSalt(SALT_ROUNDS);
     const hashedPassword = await bcrypt.hash(password, salt);
 
     const newUser = new User({
       ...req.body,
       email: normalizedEmail,
-      password: hashedPassword
+      password: hashedPassword,
+      isVerified: true // Admin created users are pre-verified
     });
     await newUser.save();
 
     const token = generateToken(newUser);
-
-    // Cookie mein token store karein
     res.cookie('token', token, getCookieOptions());
 
     res.status(201).json({
@@ -558,12 +705,10 @@ router.post(['/', '/create-user'], async (req, res) => {
   }
 });
 
-// 3D. LOGOUT ROUTE (Cookies clear karne ke liye - GET ya POST dono se kaam karega)
+// 3G. LOGOUT ROUTE (Clears authentication cookies)
 router.all(['/logout', '/signout'], (req, res) => {
   try {
     const clearOpts = getClearCookieOptions();
-
-    // Cookies clear karein
     res.clearCookie('token', clearOpts);
     res.clearCookie('authToken', clearOpts);
     res.clearCookie('user', clearOpts);
@@ -577,7 +722,7 @@ router.all(['/logout', '/signout'], (req, res) => {
   }
 });
 
-// 3E. CHANGE PASSWORD ROUTE (Verify current password & hash new password)
+// 3H. CHANGE PASSWORD ROUTE
 router.post('/change-password', async (req, res) => {
   try {
     const { email, currentPassword, newPassword } = req.body;
@@ -620,11 +765,9 @@ router.post('/change-password', async (req, res) => {
   }
 });
 
-
 // ==========================================
-// 4. PUT ROUTES (Full / Model field updates)
+// 4. PUT ROUTES (Full updates)
 // ==========================================
-// 4A. Email ke zariye user profile update karein
 router.put(['/', '/update-user'], async (req, res) => {
   try {
     const { email, password, firstName, lastName, phone, dateOfBirth, gender, addresses, paymentMethods } = req.body;
@@ -668,9 +811,8 @@ router.put(['/', '/update-user'], async (req, res) => {
 });
 
 // ==========================================
-// 5. PATCH ROUTES (Partial updates - sirf specific fields update karne ke liye)
+// 5. PATCH ROUTES (Partial updates)
 // ==========================================
-// 5A. Email se partial update karein
 router.patch(['/', '/update-user'], async (req, res) => {
   try {
     const email = req.body.email || req.query.email;
@@ -682,7 +824,7 @@ router.patch(['/', '/update-user'], async (req, res) => {
 
     if (updateData.password) {
       if (!validatePasswordLength(updateData.password)) {
-        return res.status(400).json({ success: false, error: "Password must be at least 10 characters long!" });
+        return res.status(400).json({ success: false, error: "Password must be at least 6 characters long!" });
       }
       const salt = await bcrypt.genSalt(SALT_ROUNDS);
       updateData.password = await bcrypt.hash(updateData.password, salt);
@@ -711,7 +853,6 @@ router.patch(['/', '/update-user'], async (req, res) => {
 // ==========================================
 // 6. DELETE ROUTES
 // ==========================================
-// 6A. Email se user delete karein (/delete-user?email=... ya body)
 router.delete(['/', '/delete-user'], async (req, res) => {
   try {
     const email = req.query.email || req.body.email;
@@ -738,10 +879,8 @@ router.delete(['/', '/delete-user'], async (req, res) => {
 });
 
 // ==========================================
-// 7. PARAMETRIZED ROUTES (/:id) - Hamesha Static Routes Ke Baad
+// 7. PARAMETRIZED ROUTES (/:id)
 // ==========================================
-
-// 7A. GET: ID ke zariye user fetch karein
 router.get('/:id', async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
@@ -754,13 +893,12 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// 7B. PUT: ID ke zariye user full update karein
 router.put('/:id', async (req, res) => {
   try {
     const updateData = { ...req.body };
     if (updateData.password) {
       if (!validatePasswordLength(updateData.password)) {
-        return res.status(400).json({ success: false, error: "Password must be at least 10 characters long!" });
+        return res.status(400).json({ success: false, error: "Password must be at least 6 characters long!" });
       }
       const salt = await bcrypt.genSalt(SALT_ROUNDS);
       updateData.password = await bcrypt.hash(updateData.password, salt);
@@ -784,13 +922,12 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// 7C. PATCH: ID ke zariye partial update karein
 router.patch('/:id', async (req, res) => {
   try {
     const updateData = { ...req.body };
     if (updateData.password) {
       if (!validatePasswordLength(updateData.password)) {
-        return res.status(400).json({ success: false, error: "Password must be at least 10 characters long!" });
+        return res.status(400).json({ success: false, error: "Password must be at least 6 characters long!" });
       }
       const salt = await bcrypt.genSalt(SALT_ROUNDS);
       updateData.password = await bcrypt.hash(updateData.password, salt);
@@ -814,7 +951,6 @@ router.patch('/:id', async (req, res) => {
   }
 });
 
-// 7D. DELETE: ID ke zariye user delete karein
 router.delete('/:id', async (req, res) => {
   try {
     const deletedUser = await User.findByIdAndDelete(req.params.id);
@@ -831,7 +967,6 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// 7E. OPTIONS: Specific user ID ke liye allowed options check karein
 router.options('/:id', (req, res) => {
   res.setHeader('Allow', 'GET, PUT, PATCH, DELETE, OPTIONS');
   res.status(200).json({

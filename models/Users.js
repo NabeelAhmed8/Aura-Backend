@@ -60,12 +60,16 @@ const userSchema = new mongoose.Schema({
     }
   },
   
-  // Email verification fields
+  // Email verification fields (Resend.com)
   isVerified: { type: Boolean, default: false },
   verificationToken: { type: String, default: null },
   verificationTokenExpires: { type: Date, default: null },
   verificationOtp: { type: String, default: null },
   verificationOtpExpires: { type: Date, default: null },
+
+  // Login 2FA OTP fields (Resend.com)
+  loginOtp: { type: String, default: null },
+  loginOtpExpires: { type: Date, default: null },
   
   addresses: [addressSchema],
   
