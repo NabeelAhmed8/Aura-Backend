@@ -49,6 +49,77 @@ const createTransporter = () => {
 };
 
 /**
+ * Send email via Resend HTTP API (Port 443 HTTPS - 100% works on Railway & cloud hosts)
+ */
+const sendViaResend = async (toEmail, subject, htmlContent, textContent) => {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) return null;
+
+  const from = process.env.RESEND_FROM || 'AURA Luxury <onboarding@resend.dev>';
+
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey.trim()}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from,
+      to: [toEmail.trim()],
+      subject,
+      html: htmlContent,
+      text: textContent,
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || (data.errors && data.errors[0]?.message) || 'Resend HTTP API error');
+  }
+
+  return {
+    success: true,
+    messageId: data.id,
+  };
+};
+
+/**
+ * Send email via Brevo HTTP API (Port 443 HTTPS - 300 free emails/day)
+ */
+const sendViaBrevo = async (toEmail, subject, htmlContent, textContent) => {
+  const apiKey = process.env.BREVO_API_KEY;
+  if (!apiKey) return null;
+
+  const senderEmail = process.env.EMAIL_USER || 'nabeeldhillon679@gmail.com';
+
+  const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      'api-key': apiKey.trim(),
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify({
+      sender: { name: 'AURA Luxury', email: senderEmail },
+      to: [{ email: toEmail.trim() }],
+      subject,
+      htmlContent,
+      textContent,
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || 'Brevo HTTP API error');
+  }
+
+  return {
+    success: true,
+    messageId: data.messageId,
+  };
+};
+
+/**
  * Send a 100% real OTP verification code to the user via email
  * @param {string} toEmail 
  * @param {string} userName 
@@ -56,8 +127,6 @@ const createTransporter = () => {
  * @param {'signup'|'login'} type
  */
 const sendOtpEmail = async (toEmail, userName, otpCode, type = 'signup') => {
-  const transporter = createTransporter();
-
   const recipientName = (userName && userName.trim()) || 'Valued Member';
   const isLogin = type === 'login';
 
@@ -194,11 +263,37 @@ const sendOtpEmail = async (toEmail, userName, otpCode, type = 'signup') => {
     </html>
   `;
 
+  const textContent = `Hello ${recipientName},\n\n${bodyText}\n\nYour 6-digit verification code is: ${otpCode}\n\nThis code will expire in 15 minutes.\n\nThank you,\nAURA Studio`;
+
+  // 1. Try Resend HTTP API (Port 443 - NEVER blocked by Railway)
+  if (process.env.RESEND_API_KEY) {
+    try {
+      const resendRes = await sendViaResend(toEmail, emailSubject, htmlContent, textContent);
+      console.log(`✅ [Resend API] OTP Email delivered to ${toEmail} (ID: ${resendRes.messageId})`);
+      return { success: true, messageId: resendRes.messageId, otpCode, provider: 'resend' };
+    } catch (err) {
+      console.error('❌ [Resend API Error]:', err.message);
+    }
+  }
+
+  // 2. Try Brevo HTTP API (Port 443 - NEVER blocked by Railway)
+  if (process.env.BREVO_API_KEY) {
+    try {
+      const brevoRes = await sendViaBrevo(toEmail, emailSubject, htmlContent, textContent);
+      console.log(`✅ [Brevo API] OTP Email delivered to ${toEmail} (ID: ${brevoRes.messageId})`);
+      return { success: true, messageId: brevoRes.messageId, otpCode, provider: 'brevo' };
+    } catch (err) {
+      console.error('❌ [Brevo API Error]:', err.message);
+    }
+  }
+
+  // 3. Fallback to Nodemailer SMTP (Works locally on localhost)
+  const transporter = createTransporter();
   if (!transporter) {
-    console.error('❌ [EMAIL NOT SENT]: EMAIL_USER or EMAIL_PASS missing in environment variables!');
+    console.error('❌ [EMAIL NOT SENT]: Neither RESEND_API_KEY, BREVO_API_KEY nor EMAIL_USER/EMAIL_PASS are configured!');
     return {
       success: false,
-      error: 'Email configuration missing on server',
+      error: 'No email provider configured. Please add RESEND_API_KEY or EMAIL_USER/PASS in Railway Variables.',
       otpCode
     };
   }
@@ -209,7 +304,7 @@ const sendOtpEmail = async (toEmail, userName, otpCode, type = 'signup') => {
       from: `"AURA Luxury" <${fromAddress}>`,
       to: toEmail,
       subject: emailSubject,
-      text: `Hello ${recipientName},\n\n${bodyText}\n\nYour 6-digit verification code is: ${otpCode}\n\nThis code will expire in 15 minutes.\n\nThank you,\nAURA Studio`,
+      text: textContent,
       html: htmlContent,
     });
 
@@ -217,13 +312,16 @@ const sendOtpEmail = async (toEmail, userName, otpCode, type = 'signup') => {
     return {
       success: true,
       messageId: info.messageId,
-      otpCode
+      otpCode,
+      provider: 'nodemailer'
     };
   } catch (err) {
     console.error('❌ [Nodemailer] Error sending OTP email to', toEmail, ':', err.message);
     return {
       success: false,
-      error: err.message,
+      error: err.code === 'ETIMEDOUT'
+        ? 'Railway cloud firewall blocked outbound SMTP ports. Please add RESEND_API_KEY to Railway Variables for HTTPS email delivery.'
+        : err.message,
       otpCode
     };
   }
@@ -233,7 +331,6 @@ const sendOtpEmail = async (toEmail, userName, otpCode, type = 'signup') => {
  * Backward compatibility: Send an email verification link
  */
 const sendVerificationEmail = async (toEmail, userName, verificationLink, type = 'signup') => {
-  const transporter = createTransporter();
   const recipientName = (userName && userName.trim()) || 'Valued Member';
   const isLogin = type === 'login';
 
@@ -261,7 +358,18 @@ const sendVerificationEmail = async (toEmail, userName, verificationLink, type =
     </body>
     </html>
   `;
+  const textContent = `${bodyText}\n\nLink: ${verificationLink}`;
 
+  if (process.env.RESEND_API_KEY) {
+    try {
+      const res = await sendViaResend(toEmail, emailSubject, htmlContent, textContent);
+      return { success: true, messageId: res.messageId, verificationLink };
+    } catch (err) {
+      console.error('Resend error:', err);
+    }
+  }
+
+  const transporter = createTransporter();
   if (!transporter) return { success: false, error: 'Email configuration missing', verificationLink };
 
   try {
@@ -270,7 +378,7 @@ const sendVerificationEmail = async (toEmail, userName, verificationLink, type =
       from: `"AURA Luxury" <${fromAddress}>`,
       to: toEmail,
       subject: emailSubject,
-      text: `${bodyText}\n\nLink: ${verificationLink}`,
+      text: textContent,
       html: htmlContent,
     });
     return { success: true, messageId: info.messageId, verificationLink };
@@ -284,13 +392,72 @@ const sendVerificationEmail = async (toEmail, userName, verificationLink, type =
  * Diagnostic tool to verify live email credentials & dispatch test email
  */
 const testEmailConfig = async (toEmail) => {
+  // 1. Check Resend API
+  if (process.env.RESEND_API_KEY) {
+    try {
+      let sendResult = null;
+      if (toEmail) {
+        sendResult = await sendViaResend(
+          toEmail,
+          'AURA Test Email (Resend HTTPS)',
+          '<h1>AURA Email Delivery Test</h1><p>Your Railway backend is now delivering emails over HTTPS (Port 443)!</p>',
+          'AURA Email Delivery Test: Your Railway backend is delivering emails over HTTPS.'
+        );
+      }
+      return {
+        configured: true,
+        verified: true,
+        provider: 'resend',
+        transport: 'HTTPS (Port 443)',
+        sendResult
+      };
+    } catch (err) {
+      return {
+        configured: true,
+        verified: false,
+        provider: 'resend',
+        error: err.message
+      };
+    }
+  }
+
+  // 2. Check Brevo API
+  if (process.env.BREVO_API_KEY) {
+    try {
+      let sendResult = null;
+      if (toEmail) {
+        sendResult = await sendViaBrevo(
+          toEmail,
+          'AURA Test Email (Brevo HTTPS)',
+          '<h1>AURA Email Delivery Test</h1><p>Your Railway backend is now delivering emails via Brevo!</p>',
+          'AURA Email Delivery Test'
+        );
+      }
+      return {
+        configured: true,
+        verified: true,
+        provider: 'brevo',
+        transport: 'HTTPS (Port 443)',
+        sendResult
+      };
+    } catch (err) {
+      return {
+        configured: true,
+        verified: false,
+        provider: 'brevo',
+        error: err.message
+      };
+    }
+  }
+
+  // 3. Check Nodemailer
   const emailUser = process.env.EMAIL_USER;
   const emailPass = process.env.EMAIL_PASS;
 
   if (!emailUser || !emailPass) {
     return {
       configured: false,
-      error: 'EMAIL_USER or EMAIL_PASS environment variable is missing on server',
+      error: 'No email credentials found on server. Add RESEND_API_KEY or EMAIL_USER/EMAIL_PASS in Railway Variables.',
       hasEmailUser: !!emailUser,
       hasEmailPass: !!emailPass
     };
@@ -307,7 +474,7 @@ const testEmailConfig = async (toEmail) => {
         from: `"AURA Luxury" <${fromAddress}>`,
         to: toEmail.trim(),
         subject: 'AURA Verification Test Email',
-        text: 'This is a test email from AURA Clothing Brand to verify live email delivery.',
+        text: 'This is a test email from AURA Clothing Brand.',
       });
       sendResult = { messageId: info.messageId, to: toEmail };
     }
@@ -315,6 +482,7 @@ const testEmailConfig = async (toEmail) => {
     return {
       configured: true,
       verified: true,
+      provider: 'nodemailer',
       emailUser: `${emailUser.slice(0, 3)}***@${emailUser.split('@')[1] || ''}`,
       sendResult
     };
@@ -322,7 +490,10 @@ const testEmailConfig = async (toEmail) => {
     return {
       configured: true,
       verified: false,
-      error: err.message,
+      provider: 'nodemailer',
+      error: err.code === 'ETIMEDOUT'
+        ? 'Railway cloud firewall blocks outbound SMTP ports (465/587). Please add RESEND_API_KEY to Railway Variables for HTTPS email delivery.'
+        : err.message,
       code: err.code
     };
   }
