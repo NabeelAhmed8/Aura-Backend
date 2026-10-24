@@ -249,15 +249,6 @@ router.post('/signup', async (req, res) => {
     }
 
     const normalizedEmail = email.toLowerCase().trim();
-    const existingUser = await User.findOne({ email: normalizedEmail });
-    if (existingUser) {
-      return res.status(400).json({ success: false, error: "User already exists with this email!" });
-    }
-
-    // Bcrypt Password Hashing (Salt Rounds: 10)
-    const salt = await bcrypt.genSalt(SALT_ROUNDS);
-    const hashedPassword = await bcrypt.hash(password, salt);
-
     const fName = (firstName || (name ? name.split(' ')[0] : '')).trim();
     const lName = (lastName || (name ? name.split(' ').slice(1).join(' ') : '')).trim();
 
@@ -268,6 +259,48 @@ router.post('/signup', async (req, res) => {
         parsedDob = parsed;
       }
     }
+
+    const existingUser = await User.findOne({ email: normalizedEmail });
+    if (existingUser) {
+      // Agar pehle se account bana tha magar abhi verify nahi hua:
+      if (!existingUser.isVerified) {
+        const salt = await bcrypt.genSalt(SALT_ROUNDS);
+        existingUser.password = await bcrypt.hash(password, salt);
+        if (fName) existingUser.firstName = fName;
+        if (lName) existingUser.lastName = lName;
+        if (phone) existingUser.phone = phone.trim();
+        if (parsedDob) existingUser.dateOfBirth = parsedDob;
+        if (gender) existingUser.gender = gender;
+
+        const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+        const otpExpires = new Date(Date.now() + 15 * 60 * 1000);
+        existingUser.verificationOtp = otpCode;
+        existingUser.verificationOtpExpires = otpExpires;
+        existingUser.verificationToken = otpCode;
+        existingUser.verificationTokenExpires = otpExpires;
+        await existingUser.save();
+
+        const emailResult = await sendOtpEmail(existingUser.email, `${existingUser.firstName || fName} ${existingUser.lastName || lName}`.trim(), otpCode, 'signup');
+        const isSimulatedOrFailed = emailResult?.simulated || !emailResult?.success;
+
+        return res.status(200).json({
+          success: true,
+          requiresVerification: true,
+          verificationRequired: true,
+          verificationType: 'otp',
+          message: "Verification code sent to your email. Please enter it to complete registration.",
+          email: existingUser.email,
+          user: formatUser(existingUser),
+          ...(isSimulatedOrFailed ? { debugOtp: otpCode } : {})
+        });
+      }
+
+      return res.status(400).json({ success: false, error: "An account already exists with this email. Please sign in instead." });
+    }
+
+    // Bcrypt Password Hashing (Salt Rounds: 10)
+    const salt = await bcrypt.genSalt(SALT_ROUNDS);
+    const hashedPassword = await bcrypt.hash(password, salt);
 
     // 15 Minutes ke liye 6-digit OTP Code generate karein
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
@@ -290,15 +323,18 @@ router.post('/signup', async (req, res) => {
     await newUser.save();
 
     // Nodemailer ke zariye 6-digit OTP code bhejein
-    await sendOtpEmail(newUser.email, `${fName} ${lName}`.trim(), otpCode, 'signup');
+    const emailResult = await sendOtpEmail(newUser.email, `${fName} ${lName}`.trim(), otpCode, 'signup');
+    const isSimulatedOrFailed = emailResult?.simulated || !emailResult?.success;
 
     res.status(201).json({
       success: true,
       requiresVerification: true,
+      verificationRequired: true,
       verificationType: 'otp',
       message: "Account created successfully! A 6-digit verification code has been sent to your email.",
       email: newUser.email,
-      user: formatUser(newUser)
+      user: formatUser(newUser),
+      ...(isSimulatedOrFailed ? { debugOtp: otpCode } : {})
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -348,14 +384,17 @@ router.post('/login', async (req, res) => {
     user.verificationTokenExpires = user.verificationOtpExpires;
     await user.save();
 
-    await sendOtpEmail(user.email, `${user.firstName || ''} ${user.lastName || ''}`.trim(), otpCode, 'login');
+    const emailResult = await sendOtpEmail(user.email, `${user.firstName || ''} ${user.lastName || ''}`.trim(), otpCode, 'login');
+    const isSimulatedOrFailed = emailResult?.simulated || !emailResult?.success;
 
     return res.status(200).json({
       success: true,
       requiresVerification: true,
+      verificationRequired: true,
       verificationType: 'otp',
       message: "A 6-digit sign-in code has been sent to your email. Please enter it below to continue.",
-      email: user.email
+      email: user.email,
+      ...(isSimulatedOrFailed ? { debugOtp: otpCode } : {})
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -436,16 +475,18 @@ router.post(['/resend-otp', '/resend-verification'], async (req, res) => {
     user.verificationTokenExpires = otpExpires;
     await user.save();
 
-    await sendOtpEmail(
+    const emailResult = await sendOtpEmail(
       user.email,
       `${user.firstName || ''} ${user.lastName || ''}`.trim(),
       otpCode,
       user.isVerified ? 'login' : 'signup'
     );
+    const isSimulatedOrFailed = emailResult?.simulated || !emailResult?.success;
 
     res.status(200).json({
       success: true,
-      message: "A new 6-digit verification code has been sent to your email. Please check your inbox."
+      message: "A new 6-digit verification code has been sent to your email. Please check your inbox.",
+      ...(isSimulatedOrFailed ? { debugOtp: otpCode } : {})
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

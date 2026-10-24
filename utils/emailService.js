@@ -3,18 +3,24 @@ const nodemailer = require('nodemailer');
 // Helper to create transport
 const createTransporter = () => {
   const emailUser = process.env.EMAIL_USER;
-  const emailPass = process.env.EMAIL_PASS;
+  let emailPass = process.env.EMAIL_PASS;
 
   if (!emailUser || !emailPass) {
     return null;
   }
 
+  // Google App Passwords often contain spaces when generated (e.g. 'fckq aehq jlho ervb')
+  emailPass = String(emailPass).replace(/\s+/g, '');
+
   return nodemailer.createTransport({
     service: process.env.EMAIL_SERVICE || 'gmail',
     auth: {
-      user: emailUser,
+      user: emailUser.trim(),
       pass: emailPass,
     },
+    tls: {
+      rejectUnauthorized: false
+    }
   });
 };
 
@@ -182,21 +188,23 @@ const sendOtpEmail = async (toEmail, userName, otpCode, type = 'signup') => {
   }
 
   try {
+    const fromAddress = (process.env.EMAIL_USER || 'no-reply@auraclothing.com').trim();
     const info = await transporter.sendMail({
-      from: `"AURA Luxury" <${process.env.EMAIL_USER}>`,
+      from: `"AURA Luxury" <${fromAddress}>`,
       to: toEmail,
       subject: emailSubject,
       text: `Hello ${recipientName},\n\n${bodyText}\n\nYour 6-digit verification code is: ${otpCode}\n\nThis code will expire in 15 minutes.\n\nThank you,\nAURA Studio`,
       html: htmlContent,
     });
 
+    console.log(`✅ Nodemailer: OTP Email successfully sent to ${toEmail} (ID: ${info.messageId})`);
     return {
       success: true,
       messageId: info.messageId,
       otpCode
     };
   } catch (err) {
-    console.error('❌ Nodemailer Error sending OTP email:', err.message);
+    console.error('❌ Nodemailer Error sending OTP email to', toEmail, ':', err.message);
     return {
       success: false,
       error: err.message,
