@@ -28,30 +28,40 @@ const createTransporter = () => {
   emailPass = emailPass.replace(/\s+/g, '');
 
   const smtpHost = process.env.EMAIL_HOST || 'smtp.gmail.com';
-  const smtpPort = parseInt(process.env.EMAIL_PORT || '465', 10);
-  const isSecure = smtpPort === 465 || process.env.EMAIL_SECURE === 'true';
+  const smtpPort = parseInt(process.env.EMAIL_PORT || '587', 10);
+  const isSecure = smtpPort === 465;
 
-  cachedTransporter = nodemailer.createTransport({
-    host: smtpHost,
-    port: smtpPort,
-    secure: isSecure,
-    auth: {
-      user: emailUser,
-      pass: emailPass,
-    },
-    pool: true,
-    maxConnections: 3,
-    maxMessages: 100,
-    rateLimit: 5,
-    rateDelta: 1000,
-    connectionTimeout: 10000,
-    greetingTimeout: 5000,
-    socketTimeout: 12000,
-    tls: {
-      rejectUnauthorized: false
-    }
-  });
+  const transportConfig = process.env.EMAIL_SERVICE === 'gmail' && !process.env.EMAIL_HOST
+    ? {
+        service: 'gmail',
+        auth: {
+          user: emailUser,
+          pass: emailPass,
+        },
+      }
+    : {
+        host: smtpHost,
+        port: smtpPort,
+        secure: isSecure,
+        auth: {
+          user: emailUser,
+          pass: emailPass,
+        },
+        requireTLS: smtpPort === 587,
+        pool: true,
+        maxConnections: 3,
+        maxMessages: 100,
+        rateLimit: 5,
+        rateDelta: 1000,
+        connectionTimeout: 10000,
+        greetingTimeout: 5000,
+        socketTimeout: 15000,
+        tls: {
+          rejectUnauthorized: false
+        }
+      };
 
+  cachedTransporter = nodemailer.createTransport(transportConfig);
   return cachedTransporter;
 };
 
@@ -62,7 +72,7 @@ const dispatchEmail = async ({ toEmail, subject, htmlContent, textContent }) => 
   const transporter = createTransporter();
 
   if (!transporter) {
-    const errorMsg = 'Nodemailer credentials not configured. Please set EMAIL_USER and EMAIL_PASS in your .env file.';
+    const errorMsg = 'Nodemailer credentials not configured. Please set EMAIL_USER and EMAIL_PASS.';
     console.warn(`⚠️ [Email Service] ${errorMsg}`);
     return {
       success: false,
@@ -304,7 +314,7 @@ const sendSignupVerificationEmail = async (toEmail, userName, otpCode, verificat
 };
 
 /**
- * Send Login 2FA OTP Code via Nodemailer
+ * Send Login 2FA OTP Code
  */
 const sendLoginOtpEmail = async (toEmail, userName, otpCode) => {
   console.log(`\n======================================================`);
@@ -468,7 +478,7 @@ const sendLoginOtpEmail = async (toEmail, userName, otpCode) => {
 };
 
 /**
- * Diagnostic tool to verify live Nodemailer SMTP configuration & optionally send test email
+ * Diagnostic tool to verify live Nodemailer configuration & test connectivity
  */
 const testEmailConfig = async (toEmail) => {
   const emailUser = process.env.EMAIL_USER;
@@ -492,8 +502,8 @@ const testEmailConfig = async (toEmail) => {
       sendResult = await dispatchEmail({
         toEmail: toEmail.trim(),
         subject: 'AURA - Nodemailer Test Email',
-        textContent: 'This is a test email confirming that Nodemailer is properly configured for AURA Clothing Brand.',
-        htmlContent: '<p>This is a test email confirming that <strong>Nodemailer</strong> is properly configured for AURA Clothing Brand.</p>'
+        textContent: 'This is a test email confirming live delivery via Nodemailer.',
+        htmlContent: '<p>This is a test email confirming live delivery via <strong>Nodemailer</strong>.</p>'
       });
     }
 
@@ -509,7 +519,8 @@ const testEmailConfig = async (toEmail) => {
       configured: true,
       verified: false,
       activeProvider: 'nodemailer',
-      error: err.message
+      error: err.message,
+      code: err.code
     };
   }
 };
