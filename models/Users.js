@@ -46,7 +46,19 @@ const userSchema = new mongoose.Schema({
   phone: { type: String, default: '' },
   profilePicture: { type: String, default: '' },
   dateOfBirth: { type: Date },
-  gender: { type: String, enum: ['Male', 'Female', 'Other', ''], default: '' },
+  gender: {
+    type: String,
+    enum: ['Male', 'Female', 'Other', 'male', 'female', 'other', 'prefer_not_to_say', 'Prefer not to say', ''],
+    default: '',
+    set: function (val) {
+      if (!val) return '';
+      const v = String(val).trim().toLowerCase();
+      if (v === 'male') return 'Male';
+      if (v === 'female') return 'Female';
+      if (v === 'other' || v === 'prefer_not_to_say' || v === 'prefer not to say') return 'Other';
+      return val;
+    }
+  },
   
   // Email verification fields
   isVerified: { type: Boolean, default: false },
