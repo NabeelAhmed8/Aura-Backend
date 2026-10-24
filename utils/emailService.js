@@ -1,3 +1,4 @@
+require('dotenv').config();
 const { Resend } = require('resend');
 
 // Initialize Resend Client
@@ -264,10 +265,16 @@ const sendSignupVerificationEmail = async (toEmail, userName, otpCode, verificat
       otpCode
     };
   } catch (err) {
+    const isDomainRestriction = err.message && err.message.includes('You can only send testing emails to your own email address');
+    if (isDomainRestriction) {
+      console.warn(`\n⚠️ [Resend Domain Notice]: Free Resend testing domain (onboarding@resend.dev) only allows sending to the Resend account owner.`);
+      console.warn(`👉 To send emails to ANY customer/user email address, add & verify a custom domain at https://resend.com/domains\n`);
+    }
     return {
       success: false,
       provider: 'resend',
       error: err.message,
+      isDomainRestriction,
       otpCode
     };
   }
@@ -430,10 +437,16 @@ const sendLoginOtpEmail = async (toEmail, userName, otpCode) => {
       otpCode
     };
   } catch (err) {
+    const isDomainRestriction = err.message && err.message.includes('You can only send testing emails to your own email address');
+    if (isDomainRestriction) {
+      console.warn(`\n⚠️ [Resend Domain Notice]: Free Resend testing domain (onboarding@resend.dev) only allows sending to the Resend account owner.`);
+      console.warn(`👉 To send emails to ANY customer/user email address, add & verify a custom domain at https://resend.com/domains\n`);
+    }
     return {
       success: false,
       provider: 'resend',
       error: err.message,
+      isDomainRestriction,
       otpCode
     };
   }
@@ -486,7 +499,7 @@ const testEmailConfig = async (toEmail) => {
   }
 };
 
-// Aliases for compatibility with any legacy imports
+// Aliases for compatibility
 const sendOtpEmail = async (toEmail, userName, otpCode, type = 'signup') => {
   if (type === 'login') {
     return await sendLoginOtpEmail(toEmail, userName, otpCode);
